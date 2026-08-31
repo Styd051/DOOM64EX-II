@@ -274,14 +274,14 @@ if(WIN32)
   set_property(TARGET doom64ex PROPERTY COMPILE_FLAGS "-DFLUIDSYNTH_NOT_A_DLL")
 endif(WIN32)
 
-if(WIN32)
-  # Copy DLL files over
-  add_custom_command(TARGET doom64ex POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/libpng16.dll" "${CMAKE_BINARY_DIR}/libpng16.dll"
-    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/SDL2.dll" "${CMAKE_BINARY_DIR}/SDL2.dll"
-    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/SDL2_net.dll" "${CMAKE_BINARY_DIR}/SDL2_net.dll"
-	)
-endif(WIN32)
+#if(WIN32)
+#  # Copy DLL files over
+#  add_custom_command(TARGET doom64ex POST_BUILD
+#    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/libpng16.dll" "${CMAKE_BINARY_DIR}/libpng16.dll"
+#    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/SDL2.dll" "${CMAKE_BINARY_DIR}/SDL2.dll"
+#    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/extern/bin/SDL2_net.dll" "${CMAKE_BINARY_DIR}/SDL2_net.dll"
+#	)
+#endif(WIN32)
 
 ##------------------------------------------------------------------------------
 ## Install target
