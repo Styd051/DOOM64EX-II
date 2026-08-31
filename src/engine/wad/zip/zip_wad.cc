@@ -251,13 +251,13 @@ UniquePtr<std::istream> ZipLump::stream()
 
         s.seekg(header.name_length + header.extra_length, std::ios::cur);
 
-        String bytes(header.uncompressed, 0);
+        String bytes(info_.size, 0);
         z_stream zs {};
         char buffer[32] {};
 
         inflateInit2(&zs, -MAX_WBITS);
         zs.next_out = reinterpret_cast<Bytef*>(&bytes[0]);
-        zs.avail_out = header.uncompressed;
+        zs.avail_out = static_cast<uInt>(info_.size);
 
         int code {};
         do {
