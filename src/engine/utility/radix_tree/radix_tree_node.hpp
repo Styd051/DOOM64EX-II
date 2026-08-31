@@ -6,8 +6,8 @@
 
 template <typename K, typename T, typename Compare>
 class radix_tree_node {
-    friend class radix_tree<K, T, Compare>;
-    friend class radix_tree_it<K, T, Compare>;
+	friend class ::radix_tree<K, T, Compare>;
+    friend class ::radix_tree_it<K, T, Compare>;
 
     typedef std::pair<const K, T> value_type;
     typedef typename std::map<K, radix_tree_node<K, T, Compare>*, Compare >::iterator it_child;

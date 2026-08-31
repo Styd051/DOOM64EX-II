@@ -4,7 +4,9 @@
 #include <sys/stat.h>
 #include <clocale>
 
+#ifdef __GNUC__
 #include <cxxabi.h>
+#endif
 
 #include "SDL.h"
 #include "core/args.hh"

@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <utility/endian.hh>
 #include <utility/string_view.hh>
+#include <vector>
 
 namespace imp {
   struct magic_error : std::runtime_error {
@@ -46,11 +47,11 @@ namespace imp {
       /*! Magic */
       BinaryReader& magic(StringView cmp)
       {
-          char str[cmp.length() + 1];
-          s_.read(str, cmp.length());
+          std::vector<char> str(cmp.length() + 1);
+          s_.read(str.data(), cmp.length());
           str[cmp.length()] = 0;
 
-          if (cmp != str)
+          if (cmp != str.data())
               throw magic_error("Magic string doesn't match");
 
           size_ += cmp.length();

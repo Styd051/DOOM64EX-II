@@ -34,6 +34,7 @@
 #include "m_misc.h"
 #include "m_random.h"
 #include "con_console.h"
+#include "wad/wad.hh"
 
 #ifdef _MSC_VER
 #include "i_opndir.h"

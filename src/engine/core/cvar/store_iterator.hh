@@ -51,7 +51,7 @@ namespace imp::cvar {
 
   template <class Predicate = DummyPred>
   class StoreIterator {
-      using iterator = typename imp::radix_tree<String, std::weak_ptr<Data>>::iterator;
+      using iterator = typename imp::RadixTree<String, std::weak_ptr<Data>>::iterator;
       using predicate = Predicate;
 
       struct iter_pair {

@@ -10,7 +10,7 @@ template <typename K, typename T, class Compare = std::less<K> > class radix_tre
 
 template <typename K, typename T, class Compare = std::less<K> >
 class radix_tree_it : public std::iterator<std::forward_iterator_tag, std::pair<K, T> > {
-    friend class radix_tree<K, T, Compare>;
+	friend class ::radix_tree<K, T, Compare>;
 
 public:
     radix_tree_it() : m_pointee(0) { }

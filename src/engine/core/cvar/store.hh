@@ -21,7 +21,7 @@ namespace imp {
 
     template <class Predicate>
     class StoreRange {
-        using radix_tree_it = typename imp::radix_tree<String, std::weak_ptr<Data>>::iterator;
+        using radix_tree_it = typename imp::RadixTree<String, std::weak_ptr<Data>>::iterator;
 
         radix_tree_it m_begin;
         radix_tree_it m_end;
@@ -45,8 +45,8 @@ namespace imp {
     };
 
     class Store {
-        imp::radix_tree<String, std::weak_ptr<Data>> m_vars;
-        imp::radix_tree<String, String> m_user_values;
+        imp::RadixTree<String, std::weak_ptr<Data>> m_vars;
+        imp::RadixTree<String, String> m_user_values;
 
         void p_add(std::shared_ptr<Data> data, StringView name, StringView description, const FlagSet& flags);
 

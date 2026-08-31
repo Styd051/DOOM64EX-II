@@ -21,6 +21,7 @@
 //-----------------------------------------------------------------------------
 
 #include "image/image.hh"
+#include <vector>
 
 namespace {
   struct Doom : ImageFormatIO {
@@ -44,7 +45,7 @@ Optional<Image> Doom::load(std::istream& s) const
     Header header;
     s.read(reinterpret_cast<char*>(&header), sizeof header);
 
-    int columns[header.width];
+    std::vector<int> columns(header.width);
     for (int i = 0; i < header.width; i++)
         s.read(reinterpret_cast<char*>(&columns[i]), sizeof(int));
 

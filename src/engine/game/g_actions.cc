@@ -1312,5 +1312,9 @@ void G_UnbindAction(const char *action) {
 // CMD_Crash
 //
 static CMD(Crash) {
+#ifdef _MSC_VER
+    __debugbreak();
+#else
     __builtin_trap();
+#endif
 }

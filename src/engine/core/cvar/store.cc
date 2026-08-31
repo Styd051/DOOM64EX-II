@@ -8,7 +8,7 @@ using namespace imp;
 namespace internal = imp::cvar::internal;
 
 namespace {
-  using Vars = imp::radix_tree <String, std::weak_ptr<cvar::Data>>;
+  using Vars = imp::RadixTree <String, std::weak_ptr<cvar::Data>>;
 
   String s_normalize(StringView name)
   {

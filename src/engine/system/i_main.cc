@@ -436,7 +436,7 @@ dboolean dfcmp(float f1, float f2) {
 // D_abs
 //
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && defined(_M_IX86)
 #pragma warning( disable : 4035 )
 int D_abs(int x) {
     __asm {

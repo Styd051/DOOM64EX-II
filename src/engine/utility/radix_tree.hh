@@ -9,7 +9,7 @@
 
 namespace imp {
   template <class K, class V, class Compare = std::less<K>>
-  using radix_tree = ::radix_tree<K, V, Compare>;
+  using RadixTree = ::radix_tree<K, V, Compare>;
 }
 
 #endif //__RADIX_TREE__79038274
