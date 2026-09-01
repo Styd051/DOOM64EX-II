@@ -1,3 +1,24 @@
+# DOOM 64 EX II
+
+Modern Doom 64 engine, fork from [Doom64EX](https://github.com/svkaiser/Doom64EX)
+by Samuel "Kaiser" Villarreal, from Zohar Malamant's `rom` branch.
+
+This is a modified version. See the Git history for details of the changes.
+
+## License
+
+GPL v2 or later. See LICENSE and COPYING.
+
+## Prerequisites
+
+- A Doom 64 ROM (Nintendo 64), renamed `doom64.rom`
+
+- `doom64ex.pk3`, generated during compilation
+
+## Compilation (Windows)
+
+See the Build section below.
+
 Doom64EX [![Build Status](https://travis-ci.org/svkaiser/Doom64EX.svg?branch=master)](https://travis-ci.org/svkaiser/Doom64EX) [![Build status](https://ci.appveyor.com/api/projects/status/04kswu014uwrljrd/branch/master?svg=true)](https://ci.appveyor.com/project/dotfloat/doom64ex/branch/master)
 ========
 
