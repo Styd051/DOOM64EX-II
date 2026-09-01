@@ -23,7 +23,8 @@
 ##
 
 cmake_minimum_required(VERSION 3.16)
-project(Doom64EX C CXX)
+project(Doom64EX2 C CXX)
+set(PROJECT_DISPLAY_NAME "DOOM 64 EX II")
 
 ##------------------------------------------------------------------------------
 ## Build Options

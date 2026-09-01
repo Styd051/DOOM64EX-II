@@ -266,6 +266,7 @@ set(SOURCES
 ##
 
 add_executable(doom64ex MACOSX_BUNDLE ${SOURCES})
+set_target_properties(doom64ex PROPERTIES OUTPUT_NAME doom64ex2)
 target_include_directories(doom64ex PRIVATE ${INCLUDES})
 target_link_libraries(doom64ex ${LIBRARIES})
 set_property(TARGET doom64ex PROPERTY CXX_STANDARD 17)

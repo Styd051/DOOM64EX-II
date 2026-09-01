@@ -5,7 +5,7 @@
 
 namespace imp {
   namespace config {
-    constexpr auto name         = "@PROJECT_NAME@";
+    constexpr auto name         = "@PROJECT_DISPLAY_NAME@";
     constexpr auto version      = "@VERSION@";
     constexpr auto version_git  = "@VERSION_GIT@";
     constexpr auto version_full = "@VERSION_FULL@";
