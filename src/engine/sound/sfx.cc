@@ -211,15 +211,27 @@ namespace {
   // The curve was not holding them level with the music, it was holding them
   // 5 dB under it, and the music reaches full scale too.
   //
-  // So they are given the whole range, and the sliders are left to do what
-  // sliders are for. -sfxdump prints the peaks this rests on.
+  // Given the whole range they were a little louder than the music instead,
+  // which is the other side of the same narrow answer.
   //
+  // The recordings and the synthesiser reach the speakers by different roads
+  // and arrive at different levels, so one of them has to give way for equal
+  // sliders to mean an equal mix. This is that concession, and it was set by
+  // ear between the two brackets above rather than derived: about two decibels
+  // under, which is also roughly where the recordings' median peak meets what
+  // the music actually reaches through the synthesiser -- 20000 to 27000 on
+  // MAP01, touching 32294 at its loudest, rather than the 32767 it can.
+  //
+  // -sfxdump prints the peaks this rests on.
+  //
+  constexpr float SFX_HEADROOM = 0.8f;
+
   float gain_(int volume)
   {
       float v = std::max(0, std::min(127, volume)) / 127.0f;
       float slider = std::max(0.0f, std::min(100.0f, volume_)) / 100.0f;
 
-      return v * slider;
+      return v * slider * SFX_HEADROOM;
   }
 
   //
