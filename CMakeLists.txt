@@ -151,6 +151,18 @@ if (NOT USE_CONAN)
     endif()
   endif()
 
+  #
+  # OpenAL Soft. LGPL, so it is linked dynamically -- which is what shipping a
+  # DLL means anyway -- and compatible with this engine's GPL v2-or-later.
+  #
+  # It is what plays sampled audio: the remaster's WAD keeps its 93 sound
+  # effects as WAV, where the cartridge keeps its own as sequences, and
+  # FluidSynth is a synthesiser with no notion of "play this buffer". Its EFX
+  # extension is also what the per-sector reverb and the low-pass filter will be
+  # built on.
+  #
+  find_package(OpenAL CONFIG REQUIRED)
+
   # Boost
   find_package(Boost REQUIRED)
 

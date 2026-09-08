@@ -65,6 +65,7 @@ set(LIBRARIES
   ${PNG_LIBRARIES}
   ${ZLIB_LIBRARIES}
   ${FLUIDSYNTH_LIBRARIES}
+  OpenAL::OpenAL
   ${CONAN_LIBS}
   fmt::fmt)
 
@@ -240,6 +241,8 @@ set(SOURCES
   renderer/r_wipe.cc
 
   # sound
+  sound/oal.cc
+  sound/oal.hh
   sound/rom_source.cc
   sound/s_sound.cc
 

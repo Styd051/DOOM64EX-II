@@ -43,6 +43,7 @@
 #include "p_setup.h"
 #include "i_audio.h"
 #include "con_console.h"
+#include "oal.hh"
 
 // Adjustable by menu.
 #define NORM_VOLUME     127
@@ -123,6 +124,13 @@ void S_Init(void) {
     if(nosound && nomusic) {
         return;
     }
+
+    //
+    // Opened before the sequencer, because the sequencer will come to depend on
+    // it: FluidSynth renders into a buffer, and OpenAL is what will carry that
+    // buffer to the device once the two are joined. For now it only opens.
+    //
+    oal::init();
 
     I_InitSequencer();
 
