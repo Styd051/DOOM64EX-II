@@ -1085,14 +1085,32 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
 
         auto& lump = *opt;
         song_t* song = &seq->songs[slot];
+
+        //
+        // A song that does not survive what follows has to be left inert, and
+        // that takes saying so: the copy below writes the file's first fourteen
+        // bytes straight over this struct's header fields, so a rejected file
+        // leaves ntracks holding two bytes of whatever it was. For the
+        // remaster's WAV effects that is 'V','E' out of "RIFF....WAVE", which
+        // is 17750 -- and tracks is still null, because the allocation is
+        // skipped along with the rest. The first sound played then walks 17750
+        // entries of a null array.
+        //
+        auto invalidate = [](song_t* s) {
+            s->ntracks = 0;
+            s->tracks  = nullptr;
+        };
+
         song->data = reinterpret_cast<byte *>(lump.read_bytes_ccompat(song->length));
 
         if(!song->length) {
+            invalidate(song);
             continue;
         }
 
         dmemcpy(song, song->data, 0x0e);
         if(dstrncmp(song->header, "MThd", 4)) {
+            invalidate(song);
             fail++;
             continue;
         }
@@ -1105,6 +1123,7 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
         song->tempo     = 480000;
 
         if(!Song_RegisterTracks(song)) {
+            invalidate(song);
             fail++;
             continue;
         }
@@ -1626,9 +1645,21 @@ void I_StartMusic(int mus_id) {
         return;
     }
 
+    if(mus_id < 0 || mus_id >= doomseq.nsongs) {
+        return;
+    }
+
     SEMAPHORE_LOCK()
         song = &doomseq.songs[mus_id];
-    for(i = 0; i < song->ntracks; i++) {
+
+    //
+    // Nothing was registered for this slot. Asking for it is not an error -- an
+    // IWAD is allowed not to carry every sound -- but walking its track array
+    // would be. Guarded in the loop condition rather than returned from:
+    // SEMAPHORE_LOCK and _UNLOCK are one brace pair, and leaving between them
+    // would not close it.
+    //
+    for(i = 0; song->tracks && i < song->ntracks; i++) {
         chan = Song_AddTrackToPlaylist(&doomseq, song, &song->tracks[i]);
 
         if(chan == NULL) {
@@ -1682,9 +1713,17 @@ void I_StartSound(int sfx_id, sndsrc_t* origin, int volume, int pan, int reverb)
         return;
     }
 
+    if(sfx_id < 0 || sfx_id >= doomseq.nsongs) {
+        return;
+    }
+
     SEMAPHORE_LOCK()
     song = &doomseq.songs[sfx_id];
-    for(i = 0; i < song->ntracks; i++) {
+
+    // See I_StartMusic: a slot the IWAD did not fill has no tracks to walk.
+    // Guarded rather than returned from -- SEMAPHORE_LOCK and _UNLOCK are one
+    // brace pair, so leaving between them would not close it.
+    for(i = 0; song->tracks && i < song->ntracks; i++) {
         chan = Song_AddTrackToPlaylist(&doomseq, song, &song->tracks[i]);
 
         if(chan == NULL) {
