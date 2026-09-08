@@ -912,7 +912,31 @@ namespace {
 
 std::string get_midi(size_t midi)
 {
-    return midis_.at(midi);
+    //
+    // The cartridge's sequences are read by rom_sfont(), which only runs when
+    // the cartridge is also the soundfont. Point s_SoundFont at anything else --
+    // a DLS, an SF2 -- and this was reached with midis_ empty, where .at() threw
+    // and took the engine down before the audio device was even open.
+    //
+    // A missing sequence is not a reason to stop: the song simply fails to
+    // register and the rest of the game runs. Said once, because it would
+    // otherwise be said 117 times.
+    //
+    if (midi >= midis_.size()) {
+        static bool warned = false;
+
+        if (!warned) {
+            warned = true;
+            log::warn("The cartridge's music and sound effects are sequences that live "
+                      "beside its instruments. Choosing another soundfont leaves them "
+                      "unreadable, so this game will be silent. Unset s_SoundFont to "
+                      "hear it.");
+        }
+
+        return {};
+    }
+
+    return midis_[midi];
 }
 
 //
@@ -1275,13 +1299,19 @@ void rom_sfont_dump(const char* path, fluid_synth_t* synth, int sfont_id)
                 if (a > peak) peak = a;
             }
 
-            if (peak) {
+            if (peak)
                 ++audible;
-            }
-            else {
-                out << fmt::format("silent preset {:4} bank {:3} prog {:3} \"{}\"\n",
-                                   i, p.bank, p.prog, p.name);
-            }
+
+            //
+            // The peak is printed for every preset, not just the silent ones.
+            // Comparing one version's peaks with another's says nothing -- the
+            // interpolation changed -- but comparing presets with each other
+            // inside one version says a great deal: a soundfont whose peaks run
+            // from a few hundred to full scale is one that will sound loud in
+            // places and inaudible in others.
+            //
+            out << fmt::format("peak {:4} bank {:3} prog {:3} {:6} \"{}\"\n",
+                               i, p.bank, p.prog, peak, p.name);
         }
 
         fluid_synth_all_sounds_off(synth, 0);

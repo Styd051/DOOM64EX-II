@@ -1099,9 +1099,7 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
             // synthesiser has instruments to play it with.
             //
             I_Printf("%d sound effects in doom64.wad are WAV, which this engine "
-                     "cannot play yet. Its music is MIDI and did load; it needs "
-                     "an instrument bank -- set s_SoundFont, or put doomsnd.sf2 "
-                     "next to the game.\n", fail);
+                     "cannot play yet. Its music is MIDI and did load.\n", fail);
         }
         else {
             I_Printf("Failed to load %d MIDI tracks.\n", fail);
@@ -1314,15 +1312,50 @@ void I_InitSequencer(void) {
         }
     }
 
+    //
+    // DOOMSND.DLS, the instrument bank the 2020 remaster ships its music with.
+    //
+    // Tried after the cartridge and before doomsnd.sf2: whoever has the ROM is
+    // playing the N64's own audio and wants nothing else, but whoever has only
+    // doom64.wad has 24 MIDI tracks and no instruments to play them with, and
+    // this is the file that goes with them.
+    //
+    // It is a RIFF DLS collection -- 54 instruments over 33 samples, checked --
+    // and not a SoundFont, so the SF2 loader declines it first and says so.
+    // That "Not a SoundFont file" line on the way past is normal: FluidSynth
+    // then hands the file to its DLS reader, which takes it. Native DLS needs
+    // FluidSynth 2.1 at least, and 2.5 for it without libinstpatch.
+    //
+    if (!sffound && (sfpath = app::find_data_file("doomsnd.dls"))) {
+        I_Printf("Found instrument bank %s\n", sfpath->c_str());
+        doomseq.sfont_id = fluid_synth_sfload(doomseq.synth, sfpath->c_str(), 1);
+
+        if (doomseq.sfont_id != FLUID_FAILED) {
+            CON_DPrintf("Loading %s\n", sfpath->c_str());
+
+            sffound = true;
+        }
+        else {
+            CON_Warnf("Could not load %s. DLS needs FluidSynth 2.1 or newer.\n",
+                      sfpath->c_str());
+        }
+    }
+
     if (!sffound && (sfpath = app::find_data_file("doomsnd.sf2"))) {
         I_Printf("Found SoundFont %s\n", sfpath->c_str());
         doomseq.sfont_id = fluid_synth_sfload(doomseq.synth, sfpath->c_str(), 1);
 
         if (doomseq.sfont_id != FLUID_FAILED) {
-            CON_DPrintf("Loading %s\n", s_soundfont->c_str());
+            CON_DPrintf("Loading %s\n", sfpath->c_str());
 
             sffound = true;
         }
+    }
+
+    if (!sffound) {
+        CON_Warnf("No instrument bank found: the game will be silent. Put "
+                  "doom64.rom, DOOMSND.DLS or a doomsnd.sf2 beside the game, "
+                  "or point s_SoundFont at one.\n");
     }
 
     //
