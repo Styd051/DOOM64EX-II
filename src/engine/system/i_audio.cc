@@ -1213,7 +1213,7 @@ bool operator!=(const SDL_AudioSpec& lhs, const SDL_AudioSpec& rhs)
 //
 
 fluid_sfloader_t* rom_soundfont();
-void rom_sfont_dump(const char* path);
+void rom_sfont_dump(const char* path, fluid_synth_t* synth, int sfont_id);
 void I_InitSequencer(void) {
     dboolean sffound;
     Optional<String> sfpath;
@@ -1308,7 +1308,8 @@ void I_InitSequencer(void) {
             int p = M_CheckParm("-romsfdump");
 
             if (p) {
-                rom_sfont_dump(p < myargc - 1 ? myargv[p + 1] : "romsfont.txt");
+                rom_sfont_dump(p < myargc - 1 ? myargv[p + 1] : "romsfont.txt",
+                               doomseq.synth, doomseq.sfont_id);
             }
         }
     }

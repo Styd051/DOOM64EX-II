@@ -31,15 +31,18 @@ set(PROJECT_DISPLAY_NAME "DOOM 64 EX II")
 ##
 
 option(ENABLE_TESTING "Compile unit tests" ON)
-option(ENABLE_SYSTEM_FLUIDSYNTH "Link with system-wide fluidsynth and not fluidsynth-lite" OFF)
+#
+# On by default since the engine needs FluidSynth 2. The bundled fluidsynth-lite
+# is 1.1.6, which has neither the soundfont API the cartridge loader is written
+# against -- fluid_ramsfont went in 2.0 -- nor any way to read a DLS, which is
+# the instrument bank the 2020 remaster ships.
+#
+# The submodule is kept for now rather than deleted, so that the history of what
+# it did is still one checkout away.
+#
+option(ENABLE_SYSTEM_FLUIDSYNTH "Link with system-wide fluidsynth and not fluidsynth-lite" ON)
 option(ENABLE_GTK3 "Display windows using GTK+3" OFF)
 option(VERSION_DEV "Add git commit hash to window title" ON)
-
-# If fluidsynth-lite wasn't cloned, fall back to using system fluidsynth.
-if(NOT EXISTS "${CMAKE_SOURCE_DIR}/fluidsynth/CMakeLists.txt" AND NOT ENABLE_SYSTEM_FLUIDSYNTH)
-  set(ENABLE_SYSTEM_FLUIDSYNTH ON)
-  message(WARNING "The fluidsynth submodule wasn't initialised. Run `git submodule update --init --recursive` to use fluidsynth-lite, or add -DENABLE_SYSTEM_FLUIDSYNTH=ON to use the system-provided FluidSynth library.")
-endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -119,7 +122,33 @@ if (NOT USE_CONAN)
 
   # FluidSynth
   if (ENABLE_SYSTEM_FLUIDSYNTH)
-    find_package(FluidSynth REQUIRED)
+    #
+    # FluidSynth 2.x ships a CMake config package and an imported target. The
+    # old FindFluidSynth.cmake in cmake/ only knows how to look for 1.x by hand,
+    # so try the config first and keep the search as a fallback for a system
+    # that has the library but not the package.
+    #
+    find_package(FluidSynth CONFIG QUIET)
+
+    if (FluidSynth_FOUND)
+      set(FLUIDSYNTH_LIBRARIES FluidSynth::libfluidsynth)
+      set(FLUIDSYNTH_INCLUDE_DIR "")
+      message(STATUS "Found FluidSynth ${FluidSynth_VERSION} (config package)")
+
+      #
+      # Caught here rather than in the compiler. A FluidSynth 1.x produces a
+      # screenful of errors about opaque types and a missing fluid_ramsfont,
+      # which says nothing about what is actually wrong.
+      #
+      if (FluidSynth_VERSION VERSION_LESS 2.0)
+        message(FATAL_ERROR
+          "FluidSynth ${FluidSynth_VERSION} is too old: the cartridge soundfont "
+          "loader is written against the 2.x API, and DLS support needs 2.1 or "
+          "later (2.5 for it without libinstpatch). Install FluidSynth 2.5 or newer.")
+      endif()
+    else()
+      find_package(FluidSynth REQUIRED)
+    endif()
   endif()
 
   # Boost

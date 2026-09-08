@@ -326,8 +326,33 @@ namespace {
       Vector<Instrument> instruments;
   };
 
+  //
+  // One decoded cartridge sound, and the handle FluidSynth knows it by.
+  //
+  // This used to be a fluid_sample_t filled in by hand. From FluidSynth 2.0 on
+  // that struct is opaque, so the placement is kept here -- where the witness
+  // can still read it -- and pushed across the boundary through the setters.
+  //
+  // start, end and the loop points are indices into sample_data_, which holds
+  // every sample end to end with 16 zero frames between them. Those zeroes are
+  // not padding for tidiness: FluidSynth reads a few frames either side of a
+  // loop to interpolate, and asks for at least 8 when it is given a buffer it
+  // does not own.
+  //
+  struct RomSample {
+      char            name[24] {};
+      unsigned        start {};
+      unsigned        end {};
+      unsigned        loopstart {};
+      unsigned        loopend {};
+      unsigned        samplerate {};
+      int             origpitch {};
+      int             pitchadj {};
+      fluid_sample_t* handle {};
+  };
+
   std::vector<Preset> presets_;
-  std::vector<fluid_sample_t> samples_;
+  std::vector<RomSample> samples_;
   std::vector<short> sample_data_;
 
   std::unique_ptr<PatchHeader[]> patches_;
@@ -890,63 +915,63 @@ std::string get_midi(size_t midi)
     return midis_.at(midi);
 }
 
-void rom_preset(fluid_sfont_t* sfont, fluid_preset_t* preset, size_t id)
-{
-    auto free = [](fluid_preset_t* preset) -> int {
-        delete preset;
-        return 0;
-    };
+//
+// The five callbacks every preset of this soundfont shares. Only the Preset
+// they are pointed at differs, and that rides in the preset's user data.
+//
+namespace {
+  const char* preset_get_name(fluid_preset_t* preset)
+  {
+      //
+      // The 1.x version read the Preset out of the fluid_preset_t pointer
+      // itself rather than out of its data field, which was reading a
+      // std::string from the wrong object. It went unnoticed because nothing
+      // but a log line ever asked.
+      //
+      return reinterpret_cast<Preset*>(fluid_preset_get_data(preset))->name.c_str();
+  }
 
-    auto get_name = [](fluid_preset_t* preset) -> char* {
-        return strdup(reinterpret_cast<Preset*>(preset)->name.c_str());
-    };
+  int preset_get_banknum(fluid_preset_t* preset)
+  {
+      return reinterpret_cast<Preset*>(fluid_preset_get_data(preset))->bank;
+  }
 
-    auto get_banknum = [](fluid_preset_t* preset) -> int {
-        return reinterpret_cast<Preset*>(preset->data)->bank;
-    };
+  int preset_get_num(fluid_preset_t* preset)
+  {
+      return reinterpret_cast<Preset*>(fluid_preset_get_data(preset))->prog;
+  }
 
-    auto get_num = [](fluid_preset_t* preset) -> int {
-        return reinterpret_cast<Preset*>(preset->data)->prog;
-    };
+  int preset_noteon(fluid_preset_t* preset, fluid_synth_t* synth,
+                    int chan, int key, int vel)
+  {
+      auto& data = *reinterpret_cast<Preset*>(fluid_preset_get_data(preset));
 
-    auto noteon = [](fluid_preset_t* preset, fluid_synth_t* synth, int chan, int key, int vel) -> int {
-        auto& data = *reinterpret_cast<Preset*>(preset->data);
+      for (auto& inst : data.instruments) {
+          if (key < inst.note_min || key > inst.note_max)
+              continue;
 
-        for (auto& inst : data.instruments) {
-            if (key < inst.note_min || key > inst.note_max)
-                continue;
+          if (inst.sample_id >= samples_.size())
+              continue;
 
-            auto voice = fluid_synth_alloc_voice(synth, &samples_[inst.sample_id], chan, key, vel);
+          auto voice = fluid_synth_alloc_voice(synth, samples_[inst.sample_id].handle,
+                                               chan, key, vel);
 
-            for (auto& g : inst.generators) {
-                fluid_voice_gen_set(voice, g.type, g.ival);
-            }
+          if (!voice)
+              continue;
 
-            fluid_synth_start_voice(synth, voice);
-        }
+          for (auto& g : inst.generators) {
+              fluid_voice_gen_set(voice, g.type, g.ival);
+          }
 
-        return FLUID_OK;
-    };
+          fluid_synth_start_voice(synth, voice);
+      }
 
-    *preset = {
-        &presets_[id],
-        sfont,
-        free,
-        get_name,
-        get_banknum,
-        get_num,
-        noteon,
-        nullptr
-    };
+      return FLUID_OK;
+  }
 }
 
 fluid_sfont_t* rom_sfont()
 {
-    /* create a RAM soundfont */
-    auto sfont = fluid_ramsfont_create_sfont();
-    auto ramsfont = (fluid_ramsfont_t*) sfont->data;
-    fluid_ramsfont_set_name(ramsfont, "Doom64EX RomSource");
-
     load_sn64_();
     load_sseq_();
 
@@ -961,10 +986,9 @@ fluid_sfont_t* rom_sfont()
     auto start = static_cast<size_t>(s.tellg());
     samples_.resize(sn64.num_sounds);
     auto pcm_ptr = sample_data_.data();
-    std::vector<fluid_sample_t*> fluid_samples;
     for (size_t i {}; i < sn64.num_sounds; ++i) {
         auto& sample = samples_[i];
-        std::fill_n(reinterpret_cast<char*>(&sample), sizeof(sample), 0);
+        sample = RomSample {};
 
         auto& wavtable = wavtables[i];
         auto& predictor = predictors[i];
@@ -973,15 +997,12 @@ fluid_sfont_t* rom_sfont()
         wavtable.size -= wavtable.size % 9;
 
         std::copy_n(name.data(), name.size(), sample.name);
-        sample.start = std::distance(sample_data_.data(), pcm_ptr) + 16;
+        sample.start = static_cast<unsigned>(
+            std::distance(sample_data_.data(), pcm_ptr) + 16);
         sample.end = sample.start + wavtable.size / 9 * 16;
         sample.samplerate = 22050;
         sample.origpitch = 60;
         sample.pitchadj = 0;
-        sample.sampletype = FLUID_SAMPLETYPE_MONO;
-
-        sample.valid = true;
-        sample.data = sample_data_.data();
 
         s.seekg(wavtable.start);
         decode_vadpcm(s, pcm_ptr + 16, wavtable.size, predictor);
@@ -1000,57 +1021,137 @@ fluid_sfont_t* rom_sfont()
             sample.loopstart = sample.start + loop.loop_start;
             sample.loopend = sample.start + loop.loop_end;
         }
+
+        //
+        // Hand it over. copy_data is false, so FluidSynth reads straight out of
+        // sample_data_ -- which is why the buffer must outlive the synthesiser,
+        // and does: it is a file-scope vector.
+        //
+        // That choice also decides how the loop is expressed. With copy_data
+        // true FluidSynth copies the frames behind an 8-frame margin and the
+        // sample then starts at index 8, so the loop points would have to carry
+        // that 8 with them. With it false the sample starts at 0 and the loop
+        // is simply an offset from the first frame, which is what the numbers
+        // above already are once the sample's own start is taken off. No magic
+        // constant, and nothing to get wrong when FluidSynth changes its
+        // margin.
+        //
+        // It requires at least 48 frames and 8 unused ones either side. The
+        // shortest cartridge sound is 928 frames, and the 16 zeroes written
+        // above and below cover the margin twice over.
+        //
+        sample.handle = new_fluid_sample();
+
+        if (sample.handle) {
+            fluid_sample_set_name(sample.handle, sample.name);
+
+            fluid_sample_set_sound_data(sample.handle,
+                                        sample_data_.data() + sample.start,
+                                        nullptr,
+                                        sample.end - sample.start,
+                                        sample.samplerate,
+                                        /* copy_data */ 0);
+
+            fluid_sample_set_loop(sample.handle,
+                                  sample.loopstart - sample.start,
+                                  sample.loopend - sample.start);
+
+            fluid_sample_set_pitch(sample.handle, sample.origpitch, sample.pitchadj);
+        }
     }
 
+    //
+    // The presets are built once and handed out by pointer.
+    //
+    // The 1.x code made a fresh fluid_preset_t on every lookup and never freed
+    // one, and its iterator returned the same preset for ever because nothing
+    // advanced the index. Neither showed: FluidSynth only iterates a soundfont
+    // when something asks it to list one, and nothing here ever did.
+    //
     struct Soundfont {
-        char name[20] = "Doom64EX RomSource";
-        size_t iter;
+        std::string name = "Doom64EX RomSource";
+        std::vector<fluid_preset_t*> presets;
+        size_t iter {};
     };
 
     auto free = [](fluid_sfont_t* sfont) -> int {
-        delete reinterpret_cast<Soundfont*>(sfont->data);
-        delete sfont;
+        auto data = reinterpret_cast<Soundfont*>(fluid_sfont_get_data(sfont));
+
+        if (data) {
+            for (auto p : data->presets)
+                delete_fluid_preset(p);
+
+            delete data;
+        }
+
+        for (auto& s : samples_) {
+            if (s.handle) {
+                delete_fluid_sample(s.handle);
+                s.handle = nullptr;
+            }
+        }
+
+        delete_fluid_sfont(sfont);
         return 0;
     };
 
-    auto get_name = [](fluid_sfont_t* sfont) -> char * {
-        return reinterpret_cast<Soundfont*>(sfont->data)->name;
+    auto get_name = [](fluid_sfont_t* sfont) -> const char* {
+        return reinterpret_cast<Soundfont*>(fluid_sfont_get_data(sfont))->name.c_str();
     };
 
-    auto get_preset = [](fluid_sfont_t* sfont, uint32 bank, uint32 prog) -> fluid_preset_t* {
-        auto preset = new fluid_preset_t;
-        rom_preset(sfont, preset, (bank ? new_bank_offset_ : 0) + prog);
-        return preset;
+    auto get_preset = [](fluid_sfont_t* sfont, int bank, int prog) -> fluid_preset_t* {
+        auto& data = *reinterpret_cast<Soundfont*>(fluid_sfont_get_data(sfont));
+        size_t id = (bank ? new_bank_offset_ : 0) + prog;
+
+        //
+        // Bounds checked, where the 1.x version indexed the vector blind. The
+        // synthesiser does ask for combinations that do not exist, and the
+        // documented answer to that is a null, not undefined behaviour.
+        //
+        return id < data.presets.size() ? data.presets[id] : nullptr;
     };
 
     auto iteration_start = [](fluid_sfont_t* sfont) {
-        reinterpret_cast<Soundfont*>(sfont->data)->iter = 0;
+        reinterpret_cast<Soundfont*>(fluid_sfont_get_data(sfont))->iter = 0;
     };
 
-    auto iteration_next = [](fluid_sfont_t* sfont, fluid_preset_t* preset) -> int {
-        auto& data = *reinterpret_cast<Soundfont*>(sfont->data);
-        rom_preset(sfont, preset, data.iter);
-        return data.iter < presets_.size();
+    auto iteration_next = [](fluid_sfont_t* sfont) -> fluid_preset_t* {
+        auto& data = *reinterpret_cast<Soundfont*>(fluid_sfont_get_data(sfont));
+
+        if (data.iter >= data.presets.size())
+            return nullptr;
+
+        return data.presets[data.iter++];
     };
 
-    return new fluid_sfont_t {
-        new Soundfont,
-            0,
-            free,
-            get_name,
-            get_preset,
-            iteration_start,
-            iteration_next
-            };
+    auto sfont = new_fluid_sfont(get_name, get_preset, iteration_start,
+                                 iteration_next, free);
+
+    if (!sfont)
+        return nullptr;
+
+    auto data = new Soundfont;
+    fluid_sfont_set_data(sfont, data);
+
+    data->presets.reserve(presets_.size());
+
+    for (auto& preset : presets_) {
+        auto p = new_fluid_preset(sfont, preset_get_name, preset_get_banknum,
+                                  preset_get_num, preset_noteon,
+                                  delete_fluid_preset);
+
+        if (!p)
+            break;
+
+        fluid_preset_set_data(p, &preset);
+        data->presets.push_back(p);
+    }
+
+    return sfont;
 }
 
 fluid_sfloader_t* rom_soundfont()
 {
-    auto free = [](fluid_sfloader_t* sf) {
-        delete sf;
-        return 0;
-    };
-
     auto load = [](fluid_sfloader_t*, const char *fname) -> fluid_sfont_t* {
         if (g_rom.open(fname)) {
             return rom_sfont();
@@ -1059,11 +1160,7 @@ fluid_sfloader_t* rom_soundfont()
         return nullptr;
     };
 
-    return new fluid_sfloader_t {
-        nullptr, /* data */
-        free,
-        load
-    };
+    return new_fluid_sfloader(load, delete_fluid_sfloader);
 }
 
 //
@@ -1082,7 +1179,7 @@ fluid_sfloader_t* rom_soundfont()
 // Written after the lesson of the demo work: a correction without a reference
 // to check it against is a bet, and four bets in a row cannot be told apart.
 //
-void rom_sfont_dump(const char* path)
+void rom_sfont_dump(const char* path, fluid_synth_t* synth, int sfont_id)
 {
     std::ofstream out(path);
 
@@ -1137,6 +1234,62 @@ void rom_sfont_dump(const char* path)
 
             out << "\n";
         }
+    }
+
+    //
+    // And then the question the listing cannot answer: does any of it actually
+    // make a sound?
+    //
+    // Every preset is selected in turn, given one note, and rendered for a
+    // sixteenth of a second. What is recorded is only whether the output moved
+    // at all -- the peak sample. Comparing the peaks themselves across
+    // FluidSynth versions would be meaningless, since interpolation and filters
+    // both changed, but "how many of the 147 presets produce silence" is the
+    // same question in both, and it has the same answer or the port is wrong.
+    //
+    // Safe to do here: the sequencer thread is idle until I_InitSequencer
+    // signals it, and the audio device is not open yet, so nothing else is
+    // pulling samples out of the synthesiser.
+    //
+    if (synth) {
+        constexpr int frames = 44100 / 16;
+        std::vector<short> buf(frames * 2);
+        size_t audible {};
+
+        out << "\nsynthesis probe\n";
+
+        for (size_t i {}; i < presets_.size(); ++i) {
+            const auto& p = presets_[i];
+
+            fluid_synth_all_sounds_off(synth, 0);
+            fluid_synth_program_select(synth, 0, sfont_id, p.bank, p.prog);
+            fluid_synth_noteon(synth, 0, 60, 127);
+
+            std::fill(buf.begin(), buf.end(), 0);
+            fluid_synth_write_s16(synth, frames, buf.data(), 0, 2, buf.data(), 1, 2);
+
+            int peak {};
+
+            for (auto v : buf) {
+                int a = v < 0 ? -v : v;
+                if (a > peak) peak = a;
+            }
+
+            if (peak) {
+                ++audible;
+            }
+            else {
+                out << fmt::format("silent preset {:4} bank {:3} prog {:3} \"{}\"\n",
+                                   i, p.bank, p.prog, p.name);
+            }
+        }
+
+        fluid_synth_all_sounds_off(synth, 0);
+
+        out << fmt::format("audible {} of {}\n", audible, presets_.size());
+
+        log::info("rom_sfont_dump: {} of {} presets produced sound",
+                  audible, presets_.size());
     }
 
     log::info("rom_sfont_dump: wrote {} ({} samples, {} presets)",

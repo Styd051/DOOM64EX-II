@@ -291,9 +291,14 @@ target_include_directories(doom64ex PRIVATE ${INCLUDES})
 target_link_libraries(doom64ex ${LIBRARIES})
 set_property(TARGET doom64ex PROPERTY CXX_STANDARD 17)
 
-if(WIN32)
+#
+# fluidsynth-lite is built into the executable, so its headers must not declare
+# their symbols dllimport. A system FluidSynth is a real DLL and does, so the
+# define has to go with the bundled build only.
+#
+if(WIN32 AND NOT ENABLE_SYSTEM_FLUIDSYNTH)
   set_property(TARGET doom64ex PROPERTY COMPILE_FLAGS "-DFLUIDSYNTH_NOT_A_DLL")
-endif(WIN32)
+endif()
 
 #if(WIN32)
 #  # Copy DLL files over
