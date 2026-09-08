@@ -29,6 +29,7 @@
 #include "oal.hh"
 #include "sounds.h"
 #include "i_system.h"
+#include "m_misc.h"
 #include "con_console.h"
 #include <wad.hh>
 
@@ -67,6 +68,66 @@ namespace {
   //
   bool loops_(int sfx_id)
   { return sfx_id == sfx_electric || sfx_id == sfx_quake; }
+
+  //
+  // Which of the remaster's recordings is which of the game's sounds.
+  //
+  // The WAD lists them as SFX_033..SFX_0124, and those numbers are nothing but
+  // a running count: the remaster's order is neither the cartridge's nor
+  // sounds.h's. Reading the k-th recording as the k-th sound is what put a
+  // monster's death rattle on a door and the pistol on a teleporter.
+  //
+  // This table was not guessed. It was derived from the cartridge and then
+  // checked against it:
+  //
+  //   - Each of the cartridge's 92 sound-effect sequences carries a program
+  //     change naming a patch, and that number is not the sequence's own. The
+  //     witness (-romsfdump) prints it.
+  //   - Each patch names a sample.
+  //   - Each of the remaster's recordings is one of those samples with every
+  //     16-bit value repeated -- 22050 Hz carrying 11025 Hz of content, four
+  //     bytes where the cartridge has one sample.
+  //
+  // Decimating each recording and hashing it against the cartridge's own PCM
+  // matched all 92, exactly, and the result is a clean permutation of 1..92
+  // with no slot unused and none used twice. Only one pair was undecidable and
+  // it cannot matter: the cartridge plays sfx_oof and sfx_noway from the same
+  // sample, so the remaster carries that sound twice and either copy will do.
+  //
+  constexpr int WAD_SLOTS = 93;
+
+  const int sfx_for_wad_slot_[WAD_SLOTS] = {
+      0,  5,  6,  7,  8,  9, 10, 11, 12, 13,  2, 14,
+      4, 15, 16, 17, 18, 19, 20, 21, 30, 41, 40, 32,
+     22, 24, 25, 33, 34, 35, 44, 45, 49, 54, 52, 75,
+     56, 50, 43, 31, 36, 37, 38, 46, 47, 51, 55, 53,
+     76, 39, 48, 42,  3,  1, 77, 78, 27, 28, 29, 57,
+     58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+     71, 72, 73, 74, 79, 80, 81, 82, 83, 84, 85, 86,
+     87, 88, 89, 90, 91, 92, 23, 70, 26
+  };
+
+  //
+  // SFX_033 is the first recording, SFX_0124 the last. Read from the name
+  // rather than from the lump's position, so that the table above is keyed to
+  // something the file actually says.
+  //
+  int wad_slot_from_name_(const String& name)
+  {
+      if (name.compare(0, 4, "SFX_") != 0 || name.size() < 5)
+          return -1;
+
+      int n = 0;
+
+      for (size_t i = 4; i < name.size(); ++i) {
+          if (name[i] < '0' || name[i] > '9')
+              return -1;
+
+          n = n * 10 + (name[i] - '0');
+      }
+
+      return (n >= 33 && n <= 124) ? n - 32 : -1;
+  }
 
   //
   // A RIFF/WAVE reader, walked chunk by chunk rather than assuming the usual
@@ -242,6 +303,13 @@ namespace {
   }
 }
 
+//
+// The sequencer's name table, used here to place a recording that carries a
+// cartridge name rather than one of the remaster's. Declared rather than
+// included, as p_setup.cc does.
+//
+size_t Seq_SoundLookup(StringView name);
+
 void imp::sfx::init()
 {
     if (ready_ || !oal::ready())
@@ -252,20 +320,37 @@ void imp::sfx::init()
     if (section.empty())
         return;
 
-    buffers_.assign(section.size(), 0);
+    buffers_.assign(NUMSFX, 0);
 
+    const bool dump = M_CheckParm("-sfxdump") != 0;
     size_t found {};
     size_t bytes {};
 
     for (auto& lump_ptr : section) {
         auto& lump = *lump_ptr;
+        auto  name = lump.name();
 
         //
-        // The index is what sounds.h will ask for, so a lump that somehow sits
-        // outside the section it was listed in is dropped rather than written
-        // past the end of the table.
+        // Where the sound belongs is read from the name, never from the lump's
+        // position. The remaster names its recordings SFX_033..SFX_0124 in an
+        // order of its own; anything else is looked up the way the sequencer
+        // looks up a cartridge name, so a PWAD that replaces SNDPUNCH with a
+        // WAV lands where it means to.
         //
-        if (lump.section_index() >= buffers_.size())
+        int id = -1;
+        int slot = wad_slot_from_name_(name);
+
+        if (slot >= 0 && slot < WAD_SLOTS) {
+            id = sfx_for_wad_slot_[slot];
+        } else {
+            size_t n = Seq_SoundLookup(name);
+
+            if (n < NUMSFX)
+                id = static_cast<int>(n);
+        }
+
+        // 0 is NOSOUND, which is silence and has no business holding a buffer.
+        if (id <= 0)
             continue;
 
         auto data = lump.read_bytes();
@@ -293,9 +378,16 @@ void imp::sfx::init()
             continue;
         }
 
-        buffers_[lump.section_index()] = buffer;
+        if (buffers_[id])
+            alDeleteBuffers(1, &buffers_[id]);
+
+        buffers_[id] = buffer;
         found++;
         bytes += static_cast<size_t>(wave.size);
+
+        if (dump)
+            I_Printf("  %-9s -> sound %3d  %6d bytes  %d Hz\n",
+                     name.c_str(), id, (int)wave.size, (int)wave.rate);
     }
 
     if (!found)

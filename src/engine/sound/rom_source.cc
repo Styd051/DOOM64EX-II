@@ -1217,6 +1217,37 @@ void rom_sfont_dump(const char* path, fluid_synth_t* synth, int sfont_id)
     out << "presets " << presets_.size() << "\n";
     out << "pcm " << sample_data_.size() << "\n\n";
 
+    //
+    // Which preset each sequence reaches for.
+    //
+    // A sequence is not tied to the preset of the same number: it carries a
+    // program change naming one, and the numbering of the two lists is its own.
+    // Nothing in the engine needed to know that until the remaster's WAD turned
+    // up with the same sounds recorded in a third order, and the only way to
+    // line the three up is to read what the cartridge itself says.
+    //
+    for (size_t i {}; i < midis_.size(); ++i) {
+        const auto& m = midis_[i];
+        int prog = -1;
+
+        //
+        // Read only far enough to find the first program change. This walks the
+        // bytes rather than parsing the MIDI properly, which is sound here only
+        // because these sequences put their program change before any event
+        // whose data could be mistaken for one.
+        //
+        for (size_t p {}; p + 1 < m.size(); ++p) {
+            if ((static_cast<unsigned char>(m[p]) & 0xf0) == 0xc0) {
+                prog = static_cast<unsigned char>(m[p + 1]);
+                break;
+            }
+        }
+
+        out << fmt::format("seq {:4} prog {:4}\n", i, prog);
+    }
+
+    out << "\n";
+
     for (size_t i {}; i < samples_.size(); ++i) {
         const auto& s = samples_[i];
 

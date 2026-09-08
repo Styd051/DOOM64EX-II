@@ -44,9 +44,13 @@ namespace imp {
     /*!
      * Read every recorded sound effect the loaded IWAD holds.
      *
-     * Walks the sounds section and keeps whatever parses as a RIFF/WAVE, filed
-     * under its section index -- which is the same number sounds.h uses, in
-     * both IWADs. Anything else is left alone for the sequencer.
+     * Walks the sounds section and keeps whatever parses as a RIFF/WAVE.
+     * Anything else is left alone for the sequencer.
+     *
+     * Which sound a recording is is decided by its name, not its position: the
+     * remaster lists its 92 in an order of its own, and reading them in file
+     * order plays a door where a monster should be. -sfxdump prints what each
+     * one resolved to.
      *
      * Call after oal::init() and before the first sound is played.
      */
