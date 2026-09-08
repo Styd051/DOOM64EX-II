@@ -8,6 +8,22 @@ namespace imp {
   namespace wad {
     void init();
 
+    //
+    // Which file the game data was loaded from.
+    //
+    // The two are not interchangeable below the surface. The ROM stores its
+    // textures by index and its audio as N64 sequences; the remaster's WAD
+    // stores textures by name hash and its audio as WAV and MIDI. Anything that
+    // has to know which it is asks here rather than guessing from a lump.
+    //
+    enum struct Iwad {
+        none,
+        rom,    //!< doom64.rom, the N64 cartridge
+        wad     //!< doom64.wad, the 2020 remaster's
+    };
+
+    Iwad iwad_kind();
+
     /*!
      * Add a device loader callback
      * @param device_loader

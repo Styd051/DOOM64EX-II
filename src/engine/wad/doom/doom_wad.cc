@@ -74,6 +74,7 @@ namespace {
       {
           Vector<ILumpPtr> lumps;
           Section section {};
+          bool after_textures {};
           Header header;
           read_into(stream_, header);
 
@@ -97,13 +98,36 @@ namespace {
                       section = wad::Section::sprites;
                   } else if (name == "DS_START") {
                       section = wad::Section::sounds;
+                      after_textures = false;
+                  } else if (name == "DM_START") {
+                      //
+                      // Music. There is no section of its own for it, and it
+                      // does not need one: the cartridge reader files its
+                      // MUSAMB01..MUSTITLE under sounds too, so both IWADs
+                      // answer the same lookup.
+                      //
+                      section = wad::Section::sounds;
                   } else if (name == "T_END") {
                       section = wad::Section::normal;
+                      //
+                      // The remaster's WAD puts 21 graphics between T_END and
+                      // DS_START and wraps them in no section at all -- there
+                      // is no G_START in the file. Its own engine only insists
+                      // on four sections (textures, sprites, music, sounds),
+                      // and reaches everything else by name.
+                      //
+                      // We cannot: the graphics section is how the engine finds
+                      // TITLE, SFONT, STATUS and the rest. So the run between
+                      // the two markers is claimed for it.
+                      //
+                      after_textures = true;
                   } else if (name == "G_END") {
                       section = wad::Section::normal;
                   } else if (name == "S_END") {
                       section = wad::Section::normal;
                   } else if (name == "DS_END") {
+                      section = wad::Section::normal;
+                  } else if (name == "DM_END") {
                       section = wad::Section::normal;
                   } else if (name == "ENDOFWAD") {
                       break;
@@ -113,10 +137,20 @@ namespace {
                   continue;
               }
 
-              if (section == Section::textures)
+              //
+              // Kept local: the run between the markers is claimed for
+              // graphics without disturbing the section the markers set, so
+              // DS_START still takes over from a clean state.
+              //
+              auto lump_section = section;
+
+              if (lump_section == Section::normal && after_textures)
+                  lump_section = Section::graphics;
+
+              if (lump_section == Section::textures)
                   iwad_textures.emplace_back(name);
 
-              auto lump_info = Info { name, section, dir.filepos, dir.size };
+              auto lump_info = Info { name, lump_section, dir.filepos, dir.size };
               auto lump_ptr = std::make_unique<DoomLump>(*this, lump_info);
               lumps.emplace_back(std::move(lump_ptr));
           }

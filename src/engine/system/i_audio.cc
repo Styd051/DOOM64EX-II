@@ -1085,7 +1085,26 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
     }
 
     if (fail) {
-        I_Printf("Failed to load %d MIDI tracks.\n", fail);
+        if (wad::iwad_kind() == wad::Iwad::wad) {
+            //
+            // Not a failure, a format the engine has no path for yet. The
+            // cartridge keeps its sound effects as N64 sequences, which is why
+            // they go through the synthesiser at all; the remaster's WAD keeps
+            // them as WAV, and playing those needs a PCM mixer this engine does
+            // not have.
+            //
+            // Its music is standard MIDI and does load -- the count below is
+            // the sound effects alone -- so it will play as soon as the
+            // synthesiser has instruments to play it with.
+            //
+            I_Printf("%d sound effects in doom64.wad are WAV, which this engine "
+                     "cannot play yet. Its music is MIDI and did load; it needs "
+                     "an instrument bank -- set s_SoundFont, or put doomsnd.sf2 "
+                     "next to the game.\n", fail);
+        }
+        else {
+            I_Printf("Failed to load %d MIDI tracks.\n", fail);
+        }
     }
 
     return true;
