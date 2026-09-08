@@ -19,6 +19,11 @@
 //
 //-----------------------------------------------------------------------------
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
+
 #include <AL/al.h>
 #include <AL/alc.h>
 
@@ -29,6 +34,70 @@ namespace {
   ALCdevice*  device_ {};
   ALCcontext* context_ {};
   bool        efx_ {};
+
+  //
+  // Eight buffers of 256 frames: about 46 ms of sound in hand, refilled every
+  // 6 ms or so.
+  //
+  // The size is a compromise and worth stating. Sound effects still go through
+  // the synthesiser, so the whole queue is latency between pulling a trigger
+  // and hearing it -- too long and the game feels loose. Too short and the
+  // thread cannot refill before the queue empties, which is heard as clicking.
+  // The old SDL callback ran on about 10 ms of buffer; this holds four times
+  // that in reserve while handing over a block every 6.
+  //
+  constexpr int STREAM_BUFFERS = 8;
+  constexpr int STREAM_FRAMES  = 256;
+  constexpr int STREAM_RATE    = 44100;
+
+  ALuint             stream_source_ {};
+  ALuint             stream_buffers_[STREAM_BUFFERS] {};
+  std::thread        stream_thread_;
+  std::atomic<bool>  stream_run_ { false };
+  imp::oal::StreamFill stream_fill_ {};
+  void*              stream_user_ {};
+  std::vector<short> stream_pcm_;
+
+  void stream_write_(ALuint buffer)
+  {
+      stream_fill_(stream_user_, stream_pcm_.data(), STREAM_FRAMES);
+
+      alBufferData(buffer, AL_FORMAT_STEREO16, stream_pcm_.data(),
+                   static_cast<ALsizei>(stream_pcm_.size() * sizeof(short)),
+                   STREAM_RATE);
+  }
+
+  void stream_thread_fn()
+  {
+      while (stream_run_.load(std::memory_order_relaxed)) {
+          ALint processed = 0;
+          alGetSourcei(stream_source_, AL_BUFFERS_PROCESSED, &processed);
+
+          while (processed-- > 0) {
+              ALuint buffer = 0;
+              alSourceUnqueueBuffers(stream_source_, 1, &buffer);
+              stream_write_(buffer);
+              alSourceQueueBuffers(stream_source_, 1, &buffer);
+          }
+
+          //
+          // A source that ran dry stops, and stays stopped even once it has
+          // buffers again. Nothing restarts it but this.
+          //
+          ALint state = 0;
+          alGetSourcei(stream_source_, AL_SOURCE_STATE, &state);
+
+          if (state != AL_PLAYING) {
+              ALint queued = 0;
+              alGetSourcei(stream_source_, AL_BUFFERS_QUEUED, &queued);
+
+              if (queued > 0)
+                  alSourcePlay(stream_source_);
+          }
+
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+  }
 
   //
   // Names an alc error rather than printing a number. There are only six, and a
@@ -118,8 +187,80 @@ bool imp::oal::ready()
 bool imp::oal::have_efx()
 { return efx_; }
 
+bool imp::oal::stream_start(StreamFill fill, void* user)
+{
+    if (!context_ || stream_source_ || !fill)
+        return false;
+
+    stream_fill_ = fill;
+    stream_user_ = user;
+    stream_pcm_.assign(static_cast<size_t>(STREAM_FRAMES) * 2, 0);
+
+    alGetError();
+    alGenSources(1, &stream_source_);
+    alGenBuffers(STREAM_BUFFERS, stream_buffers_);
+
+    if (alGetError() != AL_NO_ERROR) {
+        log::warn("OpenAL: could not create the synthesiser's stream");
+        stream_source_ = 0;
+        return false;
+    }
+
+    //
+    // The stream is not a thing standing somewhere in the level: it is the
+    // synthesiser itself. Marked relative to the listener and placed on top of
+    // it, so that distance attenuation and panning -- which sampled sounds will
+    // want -- never touch it.
+    //
+    alSourcei(stream_source_, AL_SOURCE_RELATIVE, AL_TRUE);
+    alSource3f(stream_source_, AL_POSITION, 0.0f, 0.0f, 0.0f);
+    alSourcef(stream_source_, AL_GAIN, 1.0f);
+
+    for (auto buffer : stream_buffers_)
+        stream_write_(buffer);
+
+    alSourceQueueBuffers(stream_source_, STREAM_BUFFERS, stream_buffers_);
+    alSourcePlay(stream_source_);
+
+    stream_run_.store(true, std::memory_order_relaxed);
+    stream_thread_ = std::thread(stream_thread_fn);
+
+    log::info("OpenAL: synthesiser stream running, {} buffers of {} frames ({} ms)",
+              STREAM_BUFFERS, STREAM_FRAMES,
+              STREAM_BUFFERS * STREAM_FRAMES * 1000 / STREAM_RATE);
+
+    return true;
+}
+
+void imp::oal::stream_stop()
+{
+    if (!stream_source_)
+        return;
+
+    stream_run_.store(false, std::memory_order_relaxed);
+
+    if (stream_thread_.joinable())
+        stream_thread_.join();
+
+    alSourceStop(stream_source_);
+
+    //
+    // Detach every buffer before deleting: a buffer still queued on a source
+    // belongs to it, and alDeleteBuffers will refuse.
+    //
+    alSourcei(stream_source_, AL_BUFFER, 0);
+    alDeleteSources(1, &stream_source_);
+    alDeleteBuffers(STREAM_BUFFERS, stream_buffers_);
+
+    stream_source_ = 0;
+    stream_fill_ = nullptr;
+    stream_user_ = nullptr;
+}
+
 void imp::oal::shutdown()
 {
+    stream_stop();
+
     if (context_) {
         alcMakeContextCurrent(nullptr);
         alcDestroyContext(context_);

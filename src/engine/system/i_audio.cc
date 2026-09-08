@@ -44,8 +44,7 @@
 #include "m_misc.h"         // M_CheckParm, myargc, myargv
 #include <platform/app.hh>
 #include <wad.hh>
-
-#include "SDL.h"
+#include "oal.hh"
 
 // 20120203 villsa - cvar for soundfont location
 extern cvar::StringVar s_soundfont;
@@ -233,33 +232,6 @@ static doomseq_t doomseq = {0};   // doom sequencer
 typedef void(*eventhandler)(doomseq_t*, channel_t*);
 typedef int(*signalhandler)(doomseq_t*);
 
-//
-// Audio_Play
-//
-// Callback for SDL
-//
-static void Audio_Play(void *user, Uint8 *stream, int len)
-{
-    fluid_synth_t *synth = (fluid_synth_t *) user;
-
-    // zero out the audio
-    std::fill_n(stream, len, 0);
-
-    fluid_synth_write_s16(synth, len / (2 * sizeof(short)) , stream, 0, 2, stream, 1, 2);
-}
-
-//
-// Audio_Play_float
-//
-static void Audio_Play_float(void *user, Uint8 *stream, int len)
-{
-    fluid_synth_t *synth = (fluid_synth_t *) user;
-
-    // zero out the audio
-    std::fill_n(stream, len, 0);
-
-    fluid_synth_write_float(synth, len / (2 * sizeof(float)), stream, 0, 2, stream, 1, 2);
-}
 
 //
 // Seq_SetGain
@@ -1173,9 +1145,11 @@ static void Seq_Shutdown(doomseq_t* seq) {
     SDL_WaitThread(seq->thread, NULL);
 
     //
-    // prevent calls to Audio_Play()
+    // Stop the stream before the synthesiser goes: the streaming thread calls
+    // fluid_synth_write_s16 on this very synth, and delete_fluid_synth below
+    // would pull it out from under it.
     //
-    SDL_CloseAudio();
+    oal::stream_stop();
 
     //
     // fluidsynth cleanup stuff
@@ -1241,20 +1215,6 @@ static int SDLCALL Thread_PlayerHandler(void *param) {
 }
 
 //
-// equality operators for SDL_AudioSpec
-//
-bool operator==(const SDL_AudioSpec& lhs, const SDL_AudioSpec& rhs)
-{
-    return lhs.format == rhs.format &&
-        lhs.freq == rhs.freq &&
-        lhs.channels == rhs.channels &&
-        lhs.samples == rhs.samples;
-}
-
-bool operator!=(const SDL_AudioSpec& lhs, const SDL_AudioSpec& rhs)
-{ return !(lhs == rhs); }
-
-//
 // I_InitSequencer
 //
 
@@ -1309,6 +1269,13 @@ void I_InitSequencer(void) {
     doomseq.settings = new_fluid_settings();
     Seq_SetConfig(&doomseq, "synth.midi-channels", 0x10 + MIDI_CHANNELS);
     Seq_SetConfig(&doomseq, "synth.polyphony", 256);
+
+    //
+    // Stated rather than left to the default, because it has to agree with the
+    // rate the OpenAL stream declares. A silent disagreement here would play
+    // the whole game at the wrong pitch.
+    //
+    fluid_settings_setnum(doomseq.settings, "synth.sample-rate", 44100.0);
 
     //
     // init synth
@@ -1435,70 +1402,22 @@ void I_InitSequencer(void) {
 
     Song_ClearPlaylist();
 
-    if (!SDL_WasInit(0))
-        SDL_Init(0);
-
-    if (!SDL_WasInit(SDL_INIT_AUDIO))
-        SDL_InitSubSystem(SDL_INIT_AUDIO);
-
-    SDL_AudioSpec spec, obtained;
-
-    spec.format = AUDIO_S16;
-    spec.freq = 44100;
-    spec.samples = 128;
-    spec.channels = 2;
-    spec.callback = Audio_Play;
-    spec.userdata = doomseq.synth;
-
-    SDL_OpenAudio(&spec, &obtained);
-
-    log::info("SDL_OpenAudio settings:");
-    log::info("| format             (spec: {:<5}, got: {:<5})", spec.format, obtained.format);
-    log::info("+-+ bitsize          (spec: {:<5}, got: {:<5})",
-              SDL_AUDIO_BITSIZE(spec.format),
-              SDL_AUDIO_BITSIZE(obtained.format));
-    log::info("  | is signed        (spec: {:<5}, got: {:<5})",
-              SDL_AUDIO_ISSIGNED(spec.format),
-              SDL_AUDIO_ISSIGNED(obtained.format));
-    log::info("  | is int           (spec: {:<5}, got: {:<5})",
-              SDL_AUDIO_ISINT(spec.format),
-              SDL_AUDIO_ISINT(obtained.format));
-    log::info("  | is little-endian (spec: {:<5}, got: {:<5})",
-              SDL_AUDIO_ISLITTLEENDIAN(spec.format),
-              SDL_AUDIO_ISLITTLEENDIAN(obtained.format));
-    log::info("+-+ is unsigned      (spec: {:<5}, got: {:<5})",
-              SDL_AUDIO_ISUNSIGNED(spec.format),
-              SDL_AUDIO_ISUNSIGNED(obtained.format));
-    log::info("| freq               (spec: {:<5}, got: {:<5})", spec.freq, obtained.freq);
-    log::info("| samples            (spec: {:<5}, got: {:<5})", spec.samples, obtained.samples);
-    log::info("| channels           (spec: {:<5}, got: {:<5})", spec.channels, obtained.channels);
-
-    // We can probably just accept the new sample rate without issues.
-    if (spec.samples != obtained.samples) {
-        spec.samples = obtained.samples;
-        log::warn("Setting sample rate to {}", spec.samples);
-    }
-
-    // If we didn't get what we asked for, try again with float
-    if (spec != obtained) {
-        fluid_settings_setstr(doomseq.settings, "audio.sample-format", "float");
-
-        spec.format = AUDIO_F32;
-        spec.callback = Audio_Play_float;
-
-        SDL_CloseAudio();
-        SDL_OpenAudio(&spec, &obtained);
-    }
-
-    // Finally, if we still don't have what we asked for, quit. Silence is
-    // better than broken ears.
-    if (spec != obtained) {
-        log::warn("Failed to start audio: Couldn't get audio spec that we asked for");
-        SDL_CloseAudio();
+    //
+    // The synthesiser's output goes to OpenAL now, not to an SDL audio
+    // callback.
+    //
+    // Nothing about the synthesis changes: it still renders interleaved stereo
+    // 16-bit at 44100 into a buffer handed to it, exactly as it did. What
+    // changes is who carries that buffer to the device -- and the point of
+    // changing it is that sampled sounds can then share one output with the
+    // synthesiser instead of the two libraries fighting over the device.
+    //
+    if (!oal::stream_start([](void*, short* out, int frames) {
+            fluid_synth_write_s16(doomseq.synth, frames, out, 0, 2, out, 1, 2);
+        }, nullptr)) {
+        CON_Warnf("I_InitSequencer: no audio output; the game will be silent\n");
         return;
     }
-
-    SDL_PauseAudio(SDL_FALSE);
 
     // 20120205 villsa - sequencer is now ready
     seqready = true;
