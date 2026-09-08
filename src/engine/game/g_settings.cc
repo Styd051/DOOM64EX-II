@@ -55,8 +55,18 @@ char    DefaultConfig[] =
 // G_ExecuteMultipleCommands
 //
 
+//
+// Both the load at startup and the save on exit come through here, which is
+// what makes -config mean anything: it has to name the same file in both
+// directions or the option would read one and overwrite the other.
+//
+// It did neither. G_LoadSettings parsed -config and assigned ConfigFileName,
+// and this function ignored it and hard-coded the name -- so the variable was
+// written and never read, and the option silently did nothing. An option that
+// exists and has no effect is worse than no option, because it is trusted.
+//
 char *G_GetConfigFileName(void) {
-    return I_GetUserFile("config.cfg");
+    return I_GetUserFile(ConfigFileName ? ConfigFileName : "config.cfg");
 }
 
 void G_ExecuteMultipleCommands(char *data) {
