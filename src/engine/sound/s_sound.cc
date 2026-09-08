@@ -44,6 +44,7 @@
 #include "i_audio.h"
 #include "con_console.h"
 #include "oal.hh"
+#include "sfx.hh"
 
 // Adjustable by menu.
 #define NORM_VOLUME     127
@@ -133,6 +134,12 @@ void S_Init(void) {
     oal::init();
 
     I_InitSequencer();
+
+    //
+    // After the sequencer, because it is the sequencer that reports which
+    // sounds it could not take, and this is what takes them instead.
+    //
+    sfx::init();
 
     S_SetMusicVolume(*s_musvol);
     S_SetSoundVolume(*s_sfxvol);

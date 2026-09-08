@@ -46,6 +46,7 @@
 #include "z_zone.h"
 #include "i_system.h"
 #include "i_audio.h"
+#include "sfx.hh"
 #include "sound/oal.hh"
 #include "gl_draw.h"
 
@@ -335,6 +336,7 @@ void I_Quit(void)
 #endif
 
     I_ShutdownSound();
+    imp::sfx::shutdown();
     imp::oal::shutdown();
 
     void imp_quit_sdl2();

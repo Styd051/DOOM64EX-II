@@ -244,6 +244,8 @@ set(SOURCES
   sound/oal.cc
   sound/oal.hh
   sound/rom_source.cc
+  sound/sfx.cc
+  sound/sfx.hh
   sound/s_sound.cc
 
   # statusbar

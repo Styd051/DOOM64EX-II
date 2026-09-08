@@ -45,6 +45,7 @@
 #include <platform/app.hh>
 #include <wad.hh>
 #include "oal.hh"
+#include "sfx.hh"
 
 // 20120203 villsa - cvar for soundfont location
 extern cvar::StringVar s_soundfont;
@@ -1104,17 +1105,16 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
     if (fail) {
         if (wad::iwad_kind() == wad::Iwad::wad) {
             //
-            // Not a failure, a format the engine has no path for yet. The
-            // cartridge keeps its sound effects as N64 sequences, which is why
-            // they go through the synthesiser at all; the remaster's WAD keeps
-            // them as WAV, and playing those needs a PCM mixer this engine does
-            // not have.
+            // Not a failure, a division of labour. The cartridge keeps its
+            // sound effects as N64 sequences, which is why they go through the
+            // synthesiser at all; the remaster's WAD keeps them as WAV, and
+            // those are read by sound/sfx.cc and played through OpenAL.
             //
-            // Its music is standard MIDI and does load -- the count below is
-            // the sound effects alone.
+            // The sequencer declining them here is how it is meant to go. Its
+            // music is standard MIDI and does load.
             //
-            I_Printf("%d sound effects in doom64.wad are WAV, which this engine "
-                     "cannot play yet. Its music is MIDI and did load.\n", fail);
+            I_Printf("%d sound effects in doom64.wad are WAV; they are played "
+                     "as recordings, not sequences.\n", fail);
         }
         else {
             I_Printf("Failed to load %d MIDI tracks.\n", fail);
@@ -1428,7 +1428,13 @@ void I_InitSequencer(void) {
 //
 
 int I_GetMaxChannels(void) {
-    return MIDI_CHANNELS;
+    //
+    // The sequencer's sixty-four channels first, then the recorded-sound
+    // voices. s_sound.cc walks this range and hands every index straight back
+    // to I_GetSoundSource, I_UpdateChannel and I_RemoveSoundSource, which is
+    // where the two banks are told apart.
+    //
+    return MIDI_CHANNELS + sfx::channels();
 }
 
 //
@@ -1436,7 +1442,7 @@ int I_GetMaxChannels(void) {
 //
 
 int I_GetVoiceCount(void) {
-    return doomseq.voices;
+    return doomseq.voices + sfx::active();
 }
 
 //
@@ -1444,7 +1450,11 @@ int I_GetVoiceCount(void) {
 //
 
 sndsrc_t* I_GetSoundSource(int c) {
-    if(playlist[c].song == NULL) {
+    if(c >= MIDI_CHANNELS) {
+        return (sndsrc_t*)sfx::origin(c - MIDI_CHANNELS);
+    }
+
+    if(c < 0 || playlist[c].song == NULL) {
         return NULL;
     }
 
@@ -1456,7 +1466,14 @@ sndsrc_t* I_GetSoundSource(int c) {
 //
 
 void I_RemoveSoundSource(int c) {
-    playlist[c].origin = NULL;
+    if(c >= MIDI_CHANNELS) {
+        sfx::forget_origin(c - MIDI_CHANNELS);
+        return;
+    }
+
+    if(c >= 0) {
+        playlist[c].origin = NULL;
+    }
 }
 
 //
@@ -1465,6 +1482,15 @@ void I_RemoveSoundSource(int c) {
 
 void I_UpdateChannel(int c, int volume, int pan) {
     channel_t* chan;
+
+    if(c >= MIDI_CHANNELS) {
+        sfx::update(c - MIDI_CHANNELS, volume, pan);
+        return;
+    }
+
+    if(c < 0) {
+        return;
+    }
 
     chan            = &playlist[c];
     chan->basevol   = (float)volume;
@@ -1495,6 +1521,10 @@ void I_SetMusicVolume(float volume) {
 
 void I_SetSoundVolume(float volume) {
     doomseq.soundvolume = (volume * 0.925f);
+
+    // The recorded sounds apply the same 0.925 themselves, from the raw slider
+    // value, so that the two banks stay at one level.
+    sfx::set_volume(volume);
 }
 
 //
@@ -1502,6 +1532,14 @@ void I_SetSoundVolume(float volume) {
 //
 
 void I_ResetSound(void) {
+    //
+    // Done before the seqready test, and in every one of the three below: the
+    // recorded sounds do not need a sequencer, and an IWAD whose music failed
+    // to load should still fall silent when the game says so. A looping quake
+    // surviving a level change would be the alternative.
+    //
+    sfx::stop_all();
+
     if(!seqready) {
         return;
     }
@@ -1515,6 +1553,8 @@ void I_ResetSound(void) {
 //
 
 void I_PauseSound(void) {
+    sfx::pause();
+
     if(!seqready) {
         return;
     }
@@ -1528,6 +1568,8 @@ void I_PauseSound(void) {
 //
 
 void I_ResumeSound(void) {
+    sfx::resume();
+
     if(!seqready) {
         return;
     }
@@ -1599,6 +1641,8 @@ void I_StopSound(sndsrc_t* origin, int sfx_id) {
     channel_t* c;
     int i;
 
+    sfx::stop(origin, sfx_id);
+
     if(!seqready) {
         return;
     }
@@ -1623,6 +1667,20 @@ void I_StartSound(int sfx_id, sndsrc_t* origin, int volume, int pan, int reverb)
     song_t* song;
     channel_t* chan;
     int i;
+
+    //
+    // A recording wins, and the two never compete: the cartridge holds this
+    // sound as a sequence or the remaster's WAD holds it as a WAV, never both.
+    // Which one an IWAD turns out to have is settled at load, by whether the
+    // lump parses as a RIFF, so nothing here has to know which IWAD is loaded.
+    //
+    // Asked before the seqready test on purpose. Recorded sounds need no
+    // sequencer, and a WAD whose music failed to load should still be able to
+    // fire a shotgun.
+    //
+    if(sfx::play(sfx_id, origin, volume, pan)) {
+        return;
+    }
 
     if(!seqready) {
         return;
