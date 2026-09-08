@@ -324,6 +324,17 @@ void SdlVideo::set_mode(const VideoMode& mode)
             throw std::runtime_error{fmt::format("Couldn't create OpenGL Context: {}", SDL_GetError())};
         }
 
+        //
+        // Ask for SDL_TEXTINPUT. Without it the console has to work out which
+        // character a key stands for on its own, and the only tool it had was a
+        // US layout baked into a table.
+        //
+        // Asked for explicitly rather than relying on the default: SDL starts
+        // text input on some platforms and not others, and a console that can
+        // only be typed into on one of them is worse than one that never can.
+        //
+        SDL_StartTextInput();
+
         // From the drawable, not from what was asked for.
         //
         // SDL_WINDOW_ALLOW_HIGHDPI above says the engine works in real pixels,
@@ -491,6 +502,30 @@ void SdlVideo::begin_frame()
             doom.data1 = priv::translate_sdlk(e.key.keysym.sym);
             doom.data2 = priv::translate_scancode(e.key.keysym.scancode);
             D_PostEvent(&doom);
+            break;
+
+        case SDL_TEXTINPUT:
+            //
+            // What the keyboard layout actually produced. SDL sends this right
+            // after the SDL_KEYDOWN that caused it, so the two stay in order and
+            // a text field sees characters in the order they were typed.
+            //
+            // Anything outside printable ASCII is dropped: the console font is
+            // a 256-entry table of glyphs and the command parser is byte-based,
+            // so an accented character would draw as something else and parse as
+            // two bytes. Losing it is better than either.
+            //
+            for (const char* p = e.text.text; *p; ++p) {
+                unsigned char ch = static_cast<unsigned char>(*p);
+
+                if (ch < ' ' || ch > '~')
+                    continue;
+
+                doom.type = ev_text;
+                doom.data1 = ch;
+                doom.data2 = 0;
+                D_PostEvent(&doom);
+            }
             break;
 
         case SDL_MOUSEBUTTONDOWN:

@@ -41,7 +41,6 @@
 #include "doomstat.h"
 #include "d_englsh.h"
 #include "sounds.h"
-#include "m_shift.h"
 #include "z_zone.h"
 #include "s_sound.h"
 #include "f_finale.h"

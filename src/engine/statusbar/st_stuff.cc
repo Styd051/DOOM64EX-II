@@ -42,7 +42,6 @@
 #include "doomstat.h"
 #include "d_englsh.h"
 #include "sounds.h"
-#include "m_shift.h"
 #include "con_console.h"
 #include "i_system.h"
 #include "am_map.h"
@@ -1240,11 +1239,34 @@ char ST_DequeueChatChar(void) {
 // ST_FeedChatMsg
 //
 
-static dboolean st_shiftOn = false;
+//
+// Set when the keypress that opens the chat line is seen, so that the character
+// that same keypress produces does not become the first letter of the message.
+//
+static dboolean st_eattext = false;
+
 static void ST_FeedChatMsg(event_t *ev) {
     int c;
 
     if(!st_chatOn) {
+        return;
+    }
+
+    //
+    // The character the keyboard actually produced, decoded by the platform.
+    // This is the only thing that puts text in the chat line; the key events
+    // below drive editing and closing, which are keys, not letters.
+    //
+    // What it replaces was a hard-coded US layout table, so a chat line was
+    // unusable on any other keyboard.
+    //
+    if(ev->type == ev_text) {
+        if(st_eattext) {
+            st_eattext = false;
+            return;
+        }
+
+        ST_QueueChatChar((char)ev->data1);
         return;
     }
 
@@ -1272,17 +1294,9 @@ static void ST_FeedChatMsg(event_t *ev) {
         dmemset(st_chatstring[consoleplayer], 0, len);
         break;
     case KEY_CAPS:
-        if(ev->type == ev_keydown) {
-            st_shiftOn ^= 1;
-        }
-        break;
     case KEY_SHIFT:
-        if(ev->type == ev_keydown) {
-            st_shiftOn = true;
-        }
-        else if(ev->type == ev_keyup) {
-            st_shiftOn = false;
-        }
+        // Swallowed, and nothing more: caps and shift are applied by the
+        // platform before the character ever reaches us.
         break;
     case KEY_ALT:
     case KEY_PAUSE:
@@ -1313,14 +1327,9 @@ static void ST_FeedChatMsg(event_t *ev) {
     case KEY_NUMLOCK:
         break; // too lazy to do anything clever here..
     default:
-        if(ev->type != ev_keydown) {
-            return;
-        }
-
-        if(st_shiftOn) {
-            c = shiftxform[c];
-        }
-        ST_QueueChatChar((char)c);
+        // Every printable character now arrives as ev_text above. Queueing it
+        // here as well would type each one twice, and with the wrong one on any
+        // keyboard that is not American.
         break;
     }
 }
@@ -1379,6 +1388,8 @@ dboolean ST_Responder(event_t* ev) {
 
         if(ev->type == ev_keydown && ev->data1 == 't') {
             st_chatOn = true;
+            // and drop the 't' this same keypress is about to produce
+            st_eattext = true;
         }
     }
 

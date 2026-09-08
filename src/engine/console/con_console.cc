@@ -31,7 +31,6 @@
 #include "z_zone.h"
 #include "st_stuff.h"
 #include "g_actions.h"
-#include "m_shift.h"
 #include "gl_draw.h"
 #include "r_main.h"
 #include "i_system.h"
@@ -285,8 +284,6 @@ void CON_DPrintf(const char *s, ...) {
 // CON_ParseKey
 //
 
-static dboolean shiftdown = false;
-
 void CON_ParseKey(char c) {
     if(c < ' ') {
         return;
@@ -300,9 +297,12 @@ void CON_ParseKey(char c) {
         return;
     }
 
-    if(shiftdown) {
-        c = shiftxform[static_cast<size_t>(c)];
-    }
+    //
+    // No shift transform here any more. The character arrives already decoded
+    // by the platform (ev_text), so applying a US layout table to it would
+    // corrupt exactly the keyboards this is meant to serve: on a French one,
+    // shift-8 really is '8', and the table would have turned it into '*'.
+    //
 
     if(console_inputlength >= MAX_CONSOLE_INPUT_LEN - 2) {
         console_inputlength = MAX_CONSOLE_INPUT_LEN - 2;
@@ -356,6 +356,21 @@ dboolean CON_Responder(event_t* ev) {
     int c;
     dboolean clearheld = true;
 
+    //
+    // A character the platform decoded for us, layout and shift state already
+    // applied. This is the only thing that puts text in the input line; the key
+    // events below drive editing and history, which are positions, not letters.
+    //
+    if(ev->type == ev_text) {
+        if(console_state != CST_DOWN && console_state != CST_LOWER) {
+            return false;
+        }
+
+        CON_ParseKey((char)ev->data1);
+        console_complete.complete({ console_inputbuffer + 1, static_cast<size_t>(console_inputlength - 1)});
+        return true;
+    }
+
     if((ev->type != ev_keyup) && (ev->type != ev_keydown)) {
         return false;
     }
@@ -371,15 +386,6 @@ dboolean CON_Responder(event_t* ev) {
     else {
         keyheld = false;
         ticpressed = 0;
-    }
-
-    if(c == KEY_SHIFT) {
-        if(ev->type == ev_keydown) {
-            shiftdown = true;
-        }
-        else if(ev->type == ev_keyup) {
-            shiftdown = false;
-        }
     }
 
     switch(console_state) {
@@ -488,9 +494,18 @@ dboolean CON_Responder(event_t* ev) {
                     break;
                 }
 
-                clearheld = false;
-                CON_ParseKey(c);
-                console_complete.complete({ console_inputbuffer + 1, static_cast<size_t>(console_inputlength - 1)});
+                //
+                // Backspace is the one editing key that arrives here rather
+                // than in a case of its own. Everything else printable now
+                // comes from ev_text above -- inserting it here as well would
+                // type every character twice, and with the wrong one whenever
+                // the keyboard is not American.
+                //
+                if(c == KEY_BACKSPACE) {
+                    clearheld = false;
+                    CON_ParseKey(c);
+                    console_complete.complete({ console_inputbuffer + 1, static_cast<size_t>(console_inputlength - 1)});
+                }
                 break;
             }
 

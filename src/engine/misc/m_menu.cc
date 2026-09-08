@@ -60,7 +60,6 @@
 #include "d_devstat.h"
 #include "shader/postprocess.hh"
 #include "r_local.h"
-#include "m_shift.h"
 #include "m_password.h"
 #include "r_wipe.h"
 #include "st_stuff.h"
@@ -4240,13 +4239,59 @@ void M_DrawXInputButton(int x, int y, int button) {
 // M_Responder
 //
 
-static dboolean shiftdown = false;
+//
+// M_InputChar
+//
+// One character into the save-game name or the player name.
+//
+// Split out because it is now reached from two places: the text event below,
+// which is where characters actually come from, and nothing else. The menu font
+// runs from ST_FONTSTART to 'z', so anything outside that is dropped rather than
+// drawn as the wrong glyph.
+//
+static void M_InputChar(char ch) {
+    if(inputCharIndex >= inputMax) {
+        return;
+    }
+
+    if(ch != 32) {
+        if(ch - ST_FONTSTART < 0 || ch - ST_FONTSTART >= ('z' - ST_FONTSTART + 1)) {
+            return;
+        }
+    }
+
+    if(ch >= 32 && ch <= 127) {
+        if(inputCharIndex < (MENUSTRINGSIZE - 1) &&
+                M_StringWidth(inputString) < (MENUSTRINGSIZE - 2) * 8) {
+            inputString[inputCharIndex++] = ch;
+            inputString[inputCharIndex] = 0;
+        }
+    }
+}
 
 dboolean M_Responder(event_t* ev) {
     int ch;
     int i;
 
     ch = -1;
+
+    //
+    // A character the platform decoded. The menu wants one in exactly one
+    // place -- the name being typed into a save slot or the network player
+    // name; everywhere else it navigates by key, and a letter means nothing.
+    //
+    // It used to upper-case the keycode itself when shift was held, which gets
+    // letters right and everything else wrong: on a French keyboard the digits
+    // are the shifted characters, so a save could not be named "MAP 01".
+    //
+    if(ev->type == ev_text) {
+        if(!inputEnter || MenuBindActive) {
+            return false;
+        }
+
+        M_InputChar((char)ev->data1);
+        return true;
+    }
 
     if(menufadefunc || !allowmenu || demoplayback) {
         return false;
@@ -4263,16 +4308,11 @@ dboolean M_Responder(event_t* ev) {
     }
     else if(ev->type == ev_keydown) {
         ch = ev->data1;
-
-        if(ch == KEY_SHIFT) {
-            shiftdown = true;
-        }
     }
     else if(ev->type == ev_keyup) {
         thermowait = 0;
         if(ev->data1 == KEY_SHIFT) {
             ch = ev->data1;
-            shiftdown = false;
         }
     }
     else if(ev->type == ev_mouse && (ev->data2 | ev->data3)) {
@@ -4357,28 +4397,10 @@ dboolean M_Responder(event_t* ev) {
             break;
 
         default:
-
-            if(inputCharIndex >= inputMax) {
-                return true;
-            }
-
-            if(shiftdown) {
-                ch = toupper(ch);
-            }
-
-            if(ch != 32) {
-                if(ch - ST_FONTSTART < 0 || ch - ST_FONTSTART >= ('z' - ST_FONTSTART + 1)) {
-                    break;
-                }
-            }
-
-            if(ch >= 32 && ch <= 127) {
-                if(inputCharIndex < (MENUSTRINGSIZE - 1) &&
-                        M_StringWidth(inputString) < (MENUSTRINGSIZE - 2) * 8) {
-                    inputString[inputCharIndex++] = ch;
-                    inputString[inputCharIndex] = 0;
-                }
-            }
+            // Characters arrive as ev_text at the top of this function.
+            // Inserting the raw keycode here as well would type each one twice,
+            // and give the American character for the key rather than the one
+            // printed on it.
             break;
         }
         return true;
@@ -5298,5 +5320,4 @@ void M_Init(void) {
         RegionMenu[region_mode].status = 1;
     }
 
-    M_InitShiftXForm();
 }

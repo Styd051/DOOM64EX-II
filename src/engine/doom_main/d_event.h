@@ -40,7 +40,21 @@ typedef enum {
     ev_mouse,
     ev_mousedown,
     ev_mouseup,
-    ev_gamepad
+    ev_gamepad,
+    //
+    // A character the platform says was typed, in data1.
+    //
+    // Separate from ev_keydown because a key and a character are not the same
+    // thing: which character a key produces depends on the layout, the shift
+    // state, AltGr and dead keys, and only the platform knows all four. The
+    // engine used to guess with a hard-coded US table, which is wrong for every
+    // other keyboard in the world -- on a French one it cannot even produce the
+    // underscore that every cvar name contains.
+    //
+    // Only text fields consume this. Bindings and the game keep reading
+    // ev_keydown, which is what they want: a key, by position.
+    //
+    ev_text
 } evtype_t;
 
 // Event structure.

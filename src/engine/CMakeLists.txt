@@ -157,7 +157,6 @@ set(SOURCES
   misc/m_misc.cc
   misc/m_password.cc
   misc/m_random.cc
-  misc/m_shift.cc
 
   # native_ui
   native_ui/sdl2.cc
