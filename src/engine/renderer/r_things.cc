@@ -443,6 +443,26 @@ static dboolean R_GenerateSpritePlane(void *data, vtx_t* vertex) {
     spritenum = sprframe->lump[rot];
 
     //
+    // A sprite with no width or no height builds a quad of zero area: the thing
+    // is there, it moves, it can hurt you, and nothing is drawn. That is a
+    // silent failure with a very loud symptom, so it names itself once.
+    //
+    // The dimensions are seeded from the images at texture-array build time, so
+    // reaching here means something upstream is wrong -- a sprite the array
+    // never saw, or an index out of step with the sprites section.
+    //
+    if(!spritewidth[spritenum] || !spriteheight[spritenum]) {
+        static dboolean warned = false;
+
+        if(!warned) {
+            warned = true;
+            CON_Warnf("R_GenerateSpritePlane: sprite %i has no size (%ix%i); "
+                      "it cannot be drawn. Run texatlasverify.\n",
+                      spritenum, spritewidth[spritenum], spriteheight[spritenum]);
+        }
+
+        return false;
+    }
 
     // flip sprite if needed
     if(sprframe->flip[rot]) {

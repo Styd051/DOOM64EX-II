@@ -426,6 +426,39 @@ bool shader::atlas_build()
                 e.width = image.width();
                 e.height = image.height();
 
+                //
+                // Seed the sprite's world dimensions here, once, from the image
+                // itself.
+                //
+                // They decide how big the quad is that R_GenerateSpritePlane
+                // builds, and until now the only thing that ever wrote them was
+                // GL_BindSpriteTexture -- and only on the branch that actually
+                // uploads. So the geometry was built from whatever those arrays
+                // happened to hold, which for a sprite not yet uploaded is
+                // whatever Z_Malloc left in that block: they are not zeroed.
+                // Zero there means a quad of zero area, which is a thing that is
+                // present, alive, audible and invisible.
+                //
+                // Worse, the read happens *before* the write even in the good
+                // case: the drawlist runs the vertex generator first and binds
+                // the texture afterwards, so the first frame of any sprite was
+                // always built from stale numbers.
+                //
+                // These are also the better numbers. GL_BindSpriteTexture takes
+                // them from SetTextureImage, which reports the size *after* any
+                // power-of-two padding -- that is how every sprite in the game
+                // once ended up too large (a 40x56 sprite becoming 64x64).
+                // Here they are the size of the image, which is what the quad
+                // should measure.
+                //
+                if (p == 0 && spritewidth && spriteheight
+                    && spriteoffset && spritetopoffset) {
+                    spritewidth[i] = image.width();
+                    spriteheight[i] = image.height();
+                    spriteoffset[i] = image.sprite_offset().x;
+                    spritetopoffset[i] = image.sprite_offset().y;
+                }
+
                 if (place_(static_cast<size_t>(e.width) * e.height, layer, offset, e)
                     && blit_(pages, e, image)) {
                     ++placed;
