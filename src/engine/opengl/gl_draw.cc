@@ -72,6 +72,13 @@ void Draw_Sprite2D(int type, int rot, int frame, int x, int y,
 
     GL_BindSpriteTexture(sprframe->lump[rot], pal);
 
+    // The ammo icons on the status bar, the automap arrows and the finale hand
+    // all come through here, and they are interface, not world. But a sprite
+    // texture is shared with the world -- the same object the renderer will bind
+    // for a monster -- and the filter is state on the object, so it has to be
+    // put back before this returns. See the GL_SetTextureFilter below.
+    GL_SetTextureFilterHud();
+
     w = spritewidth[sprframe->lump[rot]];
     h = spriteheight[sprframe->lump[rot]];
 
@@ -94,6 +101,9 @@ void Draw_Sprite2D(int type, int rot, int frame, int x, int y,
                           flip, 1.0f - flip, 0, 1.0f, c, 0);
 
     GL_SetOrthoScale(1.0f);
+
+    // hand the texture back to the world as it was found
+    GL_SetTextureFilter();
 
     cursprite = -1;
     curgfx = -1;
@@ -144,6 +154,7 @@ int Draw_Text(int x, int y, rcolor color, float scale,
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     GL_SetOrthoScale(scale);
     GL_SetOrtho(0);
@@ -428,6 +439,7 @@ int Draw_BigText(int x, int y, rcolor color, const char* string) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     dglSetVertex(vtxstring);
 
@@ -916,8 +928,7 @@ float Draw_ConsoleText(float x, float y, rcolor color,
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
-    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GL_SetTextureFilterHud();
 
     dglSetVertex(vtxstring);
 

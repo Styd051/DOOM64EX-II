@@ -185,9 +185,19 @@ void P_InitPicAnims(void) {
 
         if(animdefs[i].palette) {
             int lump = animinfo[i].texnum;
+            int j;
 
             textureptr[lump] = (dtexture*)Z_Realloc(textureptr[lump],
                                                     animdefs[i].frames * sizeof(dtexture), PU_STATIC, 0);
+
+            // The slots Z_Realloc adds are not cleared, so they arrive holding
+            // whatever was in that memory. GL_BindWorldTexture reads a non-zero
+            // slot as "already uploaded" and binds the number it finds, so
+            // every palette above 0 was a coin toss between a stale texture and
+            // nonsense. Slot 0 is fine: InitWorldTextures zeroes it explicitly.
+            for(j = 1; j < animdefs[i].frames; j++) {
+                textureptr[lump][j] = 0;
+            }
         }
     }
 }

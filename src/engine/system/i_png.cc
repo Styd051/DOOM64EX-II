@@ -40,32 +40,28 @@
 #include "wad/wad.hh"
 #include "console/con_console.h"
 
-extern cvar::FloatVar i_gamma;
-
-namespace {
-  static int s_rgb_gamma(int c) {
-      float base = c;
-      float exp = 1.0 + (0.01f * i_gamma);
-
-      return std::min(std::pow(base, exp), 255.0f);
-  }
-}
-
 //
 // I_TranslatePalette
-// Increases the palette RGB based on gamma settings
 //
-
-static void I_TranslatePalette(char *data, size_t count, size_t size) {
-    if (i_gamma == 0)
-        return;
-
-    for(size_t i = 0; i + size - 1 < count * size; i += size) {
-        data[i + 0] = s_rgb_gamma(static_cast<uint8>(data[i + 0]));
-        data[i + 1] = s_rgb_gamma(static_cast<uint8>(data[i + 1]));
-        data[i + 2] = s_rgb_gamma(static_cast<uint8>(data[i + 2]));
-    }
-}
+// Was: raise every colour of every image to the gamma curve as it was read.
+//
+// That is the wrong place for it, and it showed. Baking the curve into the
+// palette hits everything the engine ever loads -- the status bar, the menus,
+// the title screen -- so turning the gamma up to where the world looked right
+// left the DOOM 64 logo washed out. It also has to reload every texture to take
+// effect, which is why the cvar carried a GL_DumpTextures callback.
+//
+// The curve now lives in progs/d64ex/gbuffer.shader, on the finished world image
+// and on nothing else, which is also where the measurement against KEX put it.
+// Nothing calls this any more; kept as the record of what moved and why.
+//
+// static void I_TranslatePalette(char *data, size_t count, size_t size) {
+//     if (i_gamma == 0) return;
+//     for(size_t i = 0; i + size - 1 < count * size; i += size) {
+//         data[i + 0] = s_rgb_gamma(static_cast<uint8>(data[i + 0]));
+//         ...
+//     }
+// }
 
 Image I_ReadImage(int lump, dboolean palette, dboolean nopack, double alpha, int palindex) {
     // get lump data
@@ -91,11 +87,6 @@ Image I_ReadImage(int lump, dboolean palette, dboolean nopack, double alpha, int
 
     if (!palette) {
         image.convert(alpha ? PixelFormat::rgba : PixelFormat::rgb);
-        if (i_gamma != 0) {
-            for (size_t y{}; y < image.height(); ++y) {
-                I_TranslatePalette(image[y].data_ptr(), image.width(), image.pixel_info().width);
-            }
-        }
     }
 
     return image;

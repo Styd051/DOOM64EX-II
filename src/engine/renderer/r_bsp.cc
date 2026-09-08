@@ -50,6 +50,10 @@ static void AddSegToDrawlist(drawlist_t *dl, seg_t *line, int texid, int sidetyp
 
 extern cvar::BoolVar i_interpolateframes;
 extern cvar::BoolVar r_texturecombiner;
+extern cvar::IntVar r_maxsubsectordraw;
+
+int rendersubsector = 0;
+int rendersubsectorcount = 0;
 
 //
 // R_AddClipLine
@@ -685,17 +689,77 @@ static void R_AddLine(seg_t *line) {
 }
 
 //
+// R_SubsectorColor
+//
+// [kex] r_ColorizeSubsectors.
+//
+// A colour per subsector, and the only property that matters is that
+// neighbours never share one -- the whole point is to see where one ends and
+// the next begins. Walking the hue wheel in steps of the golden ratio does
+// that: consecutive indices land about 137 degrees apart, which is as far from
+// each other as a repeated step can put them, and the sequence never settles
+// into a period the way a fixed step would.
+//
+// Full saturation would drown the geometry it is meant to show, so the value is
+// kept high and the saturation short of the edge: bright enough to read the
+// seams, pale enough to still see a doorway through it.
+//
+
+rcolor R_SubsectorColor(int num) {
+    float h = (float)num * 0.6180339887f;
+    float f;
+    float p, q, t;
+    int i;
+    float r, g, b;
+
+    h = (h - (float)(int)h) * 6.0f;     // fractional part on to the hue wheel
+    i = (int)h;
+    f = h - (float)i;
+
+    p = 1.0f - 0.65f;
+    q = 1.0f - 0.65f * f;
+    t = 1.0f - 0.65f * (1.0f - f);
+
+    switch(i) {
+    case 0:  r = 1; g = t; b = p; break;
+    case 1:  r = q; g = 1; b = p; break;
+    case 2:  r = p; g = 1; b = t; break;
+    case 3:  r = p; g = q; b = 1; break;
+    case 4:  r = t; g = p; b = 1; break;
+    default: r = 1; g = p; b = q; break;
+    }
+
+    return D_RGBA((byte)(r * 255.0f), (byte)(g * 255.0f), (byte)(b * 255.0f), 0xff);
+}
+
+//
 // R_Subsector
 //
 
 void R_Subsector(int num) {
     subsector_t    *sub;
 
+    //
+    // [kex] r_MaxSubsectorDraw. Stopping the walk after n subsectors shows the
+    // order the view traverses the BSP in -- raise it one at a time and the
+    // tree draws itself. The count is reset in R_SetupFrame.
+    //
+    if(*r_maxsubsectordraw > 0 && rendersubsectorcount >= *r_maxsubsectordraw) {
+        return;
+    }
+
+    rendersubsectorcount++;
+
+    // what the drawlist entries added below will be stamped with
+    rendersubsector = num;
+
     sub = &subsectors[num];
     frontsector = sub->sector;
 
     R_AddLeaf(sub);
     R_AddSprites(sub);
+
+    rendersubsector = 0;
 }
 
 //

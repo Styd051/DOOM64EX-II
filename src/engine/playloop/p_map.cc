@@ -72,6 +72,9 @@ line_t          *tmhitline;
 line_t          *spechit[MAXSPECIALCROSS];
 int             numspechit = 0;
 
+extern cvar::BoolVar p_fixlineskips;
+
+
 //
 // P_CheckThingCollision
 //
@@ -467,6 +470,89 @@ dboolean P_CheckPosition(mobj_t* thing, fixed_t x, fixed_t y) {
 
 
 //
+// P_CrossPathLines
+//
+// [kex] p_FixLineSkips.
+//
+// Doom gathers the special lines it might have crossed from the blockmap cells
+// around the *destination* alone: P_CheckPosition fills spechit from a box one
+// radius wide about where the thing is going. That is enough while the step is
+// short. At a walk the player covers some eleven units a tic and carries a
+// sixteen-unit radius, so every line it crosses falls inside that box. Give it a
+// rocket blast, a crusher or a teleport thrust and the step outgrows the box,
+// and a linedef lying between the two positions is never even looked at. The
+// trigger is skipped in silence -- which is exactly the behaviour a number of
+// speedruns are built on, so it gets a cvar and not a plain fix.
+//
+// The cure does not touch the move. Collision, sliding and pickups stay as they
+// are; only the set of lines considered for crossing grows, from "inside the
+// destination box" to "anywhere along the path". The crossing test itself is
+// unchanged -- still the centre of the thing passing from one side to the other
+// -- so the new set is a strict superset of the old one and this can only ever
+// add back the lines that were being missed. Below the step at which skipping
+// starts, the two sets are the same and nothing changes at all.
+//
+// Lines are collected first and fired afterwards. A traverser must not run
+// P_UseSpecialLine itself: a teleport line moves the thing and starts a
+// P_PathTraverse of its own, and P_PathTraverse keeps its state in globals.
+//
+
+static line_t*  crosshit[MAXSPECIALCROSS];
+static int      numcrosshit;
+static mobj_t*  crossthing;
+static fixed_t  crossoldx;
+static fixed_t  crossoldy;
+
+static dboolean PTR_CrossTraverse(intercept_t* in) {
+    line_t* ld = in->d.line;
+
+    if(!(ld->special & MLU_CROSS)) {
+        return true;
+    }
+
+    // brushed past it without going through
+    if(P_PointOnLineSide(crossthing->x, crossthing->y, ld) ==
+            P_PointOnLineSide(crossoldx, crossoldy, ld)) {
+        return true;
+    }
+
+    if(numcrosshit < MAXSPECIALCROSS) {
+        crosshit[numcrosshit++] = ld;
+    }
+
+    return true;
+}
+
+static void P_CrossPathLines(mobj_t* thing, fixed_t oldx, fixed_t oldy) {
+    int i;
+
+    if(thing->x == oldx && thing->y == oldy) {
+        return;
+    }
+
+    numcrosshit = 0;
+    crossthing  = thing;
+    crossoldx   = oldx;
+    crossoldy   = oldy;
+
+    P_PathTraverse(oldx, oldy, thing->x, thing->y, PT_ADDLINES, PTR_CrossTraverse);
+
+    for(i = 0; i < numcrosshit; i++) {
+        fixed_t px = thing->x;
+        fixed_t py = thing->y;
+
+        P_UseSpecialLine(thing, crosshit[i],
+                         P_PointOnLineSide(oldx, oldy, crosshit[i]));
+
+        // a teleport line has already carried the thing off; the rest of the
+        // path it was on no longer describes anything
+        if(thing->x != px || thing->y != py) {
+            break;
+        }
+    }
+}
+
+//
 // P_TryMove
 //
 // Attempt to move to a new position,
@@ -523,14 +609,28 @@ dboolean P_TryMove(mobj_t* thing, fixed_t x, fixed_t y) {
 
     // if any special lines were hit, do the effect
     if(!(thing->flags&(MF_TELEPORT|MF_NOCLIP))) {
-        while(numspechit--) {
-            // see if the line was crossed
-            ld = spechit[numspechit];
-            side = P_PointOnLineSide(thing->x, thing->y, ld);
-            oldside = P_PointOnLineSide(oldx, oldy, ld);
-            if(side != oldside) {
-                if(ld->special & MLU_CROSS) {
-                    P_UseSpecialLine(thing, ld, oldside);
+        // The box spechit was gathered from does not reach far enough when the
+        // player is thrown; walk the path instead.
+        //
+        // Never during a demo of the original's, though. This fires triggers the
+        // original skipped, and a recording made against the original expects
+        // them skipped -- one door opening early and the level is in a state the
+        // demo never planned for. Read at the point of use, like the random
+        // generator's mode, so there is no flag to leave set.
+        if(p_fixlineskips && thing->player) {
+            numspechit = 0;
+            P_CrossPathLines(thing, oldx, oldy);
+        }
+        else {
+            while(numspechit--) {
+                // see if the line was crossed
+                ld = spechit[numspechit];
+                side = P_PointOnLineSide(thing->x, thing->y, ld);
+                oldside = P_PointOnLineSide(oldx, oldy, ld);
+                if(side != oldside) {
+                    if(ld->special & MLU_CROSS) {
+                        P_UseSpecialLine(thing, ld, oldside);
+                    }
                 }
             }
         }

@@ -33,6 +33,7 @@
 #include "r_local.h"
 #include "z_zone.h"
 #include "gl_draw.h"
+#include "m_misc.h"
 #include "s_sound.h"
 #include "d_englsh.h"
 #include "r_drawlist.h"
@@ -68,6 +69,16 @@ void ST_DrawFPS(int offset) {
         lasttick = ticks;
         fps = frames;
         frames = 0;
+
+        // -logfps mirrors the counter into the log, so a framerate can be
+        // compared between runs without reading it off the screen.
+        static int logfps = -1;
+        if(logfps < 0) {
+            logfps = M_CheckParm("-logfps") ? 1 : 0;
+        }
+        if(logfps) {
+            log::info("FPS: {}", fps);
+        }
     }
     n = fps;
     Draw_Text(0, offset, WHITE, 0.35f, false, "FPS: %i", n);

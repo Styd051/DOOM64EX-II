@@ -690,13 +690,32 @@ extern cvar::FloatVar i_brightness;
 //
 
 void T_FadeInBrightness(fadebright_t* fb) {
+    //
+    // The original clamps and then applies; this used to apply or remove, never
+    // both (DOOM64-RE, p_misc.c:758):
+    //
+    //     fb->factor += 2;
+    //     if (fb->factor >= (brightness + 100)) {
+    //         fb->factor = (brightness + 100);
+    //         P_RemoveThinker(&fb->thinker);
+    //     }
+    //     P_SetLightFactor(fb->factor);
+    //
+    // On the tic that finishes the fade, ours removed the thinker without ever
+    // setting the value it had just reached, so the level settled one step below
+    // full brightness and stayed there. Small -- two units out of two hundred --
+    // but it never came back.
+    //
+    float target = *i_brightness + 100.0f;
+
     fb->factor += 2;
-    if(fb->factor < (i_brightness + 100)) {
-        R_SetLightFactor(fb->factor);
-    }
-    else {
+
+    if(fb->factor >= target) {
+        fb->factor = static_cast<int>(target);
         P_RemoveThinker(&fb->thinker);
     }
+
+    R_SetLightFactor(fb->factor);
 }
 
 //

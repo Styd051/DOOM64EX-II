@@ -44,6 +44,10 @@
 #include "m_misc.h"
 #include "g_actions.h"
 
+#include <string>
+
+#include "shader/program.hh"
+#include "shader/gl33.hh"
 #include "system/ivideo.hh"
 
 int ViewWindowX = 0;
@@ -70,10 +74,55 @@ extern cvar::BoolVar r_filter;
 extern cvar::BoolVar r_texturecombiner;
 extern cvar::BoolVar r_anisotropic;
 extern cvar::BoolVar st_flashoverlay;
+extern cvar::BoolVar st_hudlinearfilter;
 extern cvar::BoolVar v_vsync;
 extern cvar::IntVar v_depthsize;
 extern cvar::IntVar v_buffersize;
 extern cvar::IntVar r_colorscale;
+
+//
+// GL_ExtensionString
+//
+// glGetString(GL_EXTENSIONS) answers nothing in a core profile -- it was
+// replaced in 3.0 by an indexed query. Both are folded back into the one
+// space-separated string the rest of this file expects.
+//
+
+static const char *GL_ExtensionString(void) {
+    static std::string cached;
+    static dboolean built = false;
+
+    if(built) {
+        return cached.c_str();
+    }
+
+    built = true;
+
+
+    if(!glGetStringi) {
+        // Asked before gl33::load(). Nothing legitimate does that, but an
+        // empty list is a great deal better than a null call.
+        CON_Warnf("GL_ExtensionString: glGetStringi not resolved yet\n");
+        return cached.c_str();
+    }
+
+    GLint count = 0;
+    dglGetIntegerv(GL_NUM_EXTENSIONS, &count);
+
+    for(GLint i = 0; i < count; i++) {
+        const GLubyte *name = glGetStringi(GL_EXTENSIONS, (GLuint)i);
+        if(!name) {
+            continue;
+        }
+
+        if(!cached.empty()) {
+            cached += ' ';
+        }
+        cached += (const char *)name;
+    }
+
+    return cached.c_str();
+}
 
 //
 // CMD_DumpGLExtensions
@@ -84,8 +133,9 @@ static CMD(DumpGLExtensions) {
     int i = 0;
     int len = 0;
 
-    string = (char*)dglGetString(GL_EXTENSIONS);
-    len = dstrlen(string);
+    std::string copy = GL_ExtensionString();
+    string = &copy[0];
+    len = (int)copy.size();
 
     for(i = 0; i < len; i++) {
         if(string[i] == 0x20) {
@@ -112,7 +162,7 @@ static dboolean FindExtension(const char *ext) {
         return 0;
     }
 
-    extensions = dglGetString(GL_EXTENSIONS);
+    extensions = GL_ExtensionString();
 
     start = extensions;
     for(;;) {
@@ -236,11 +286,101 @@ float GL_GetOrthoScale(void) {
     return glScaleFactor;
 }
 
+
 //
 // GL_SwapBuffers
 //
 
 void GL_SwapBuffers(void) {
+    // -screenshot <n> writes sshot000.png on the nth presented frame, then
+    // carries on. The engine can otherwise only be made to take one from a
+    // key binding, which is no help when it is being driven non-interactively.
+    {
+        static int shotframe = -2;
+        static int frame = 0;
+
+        if(shotframe == -2) {
+            int p = M_CheckParm("-screenshot");
+            shotframe = (p && p < myargc - 1) ? datoi(myargv[p + 1]) : -1;
+        }
+
+        if(shotframe > 0 && ++frame == shotframe) {
+            M_ScreenShot();
+        }
+    }
+
+    // -shottic <n> does the same on the nth tic of the level instead of the nth
+    // frame, and quits afterwards.
+    //
+    // That distinction is the whole point. Frames are not comparable between two
+    // runs: the framerate decides how many of them fit into one tic, so turning
+    // an effect on shifts which moment of the game a given frame lands on, and
+    // the two images differ for reasons that have nothing to do with the effect.
+    //
+    // It counts leveltime and not gametic, because gametic includes everything
+    // before the level started -- the wad load, the texture upload, the shader
+    // compiles -- and none of that takes the same time twice. Two runs then
+    // reach a given gametic at different points of the level. leveltime is reset
+    // when the level begins, so the same value is the same moment in it.
+    {
+        static int shottic = -2;
+        static dboolean taken = false;
+
+        if(shottic == -2) {
+            int p = M_CheckParm("-shottic");
+            shottic = (p && p < myargc - 1) ? datoi(myargv[p + 1]) : -1;
+        }
+
+        if(shottic > 0 && !taken && leveltime >= shottic) {
+            taken = true;
+            M_ScreenShot();
+
+            // And leave. Its only use is capturing a frame without a person at
+            // the keyboard, and the alternative -- letting the run go on until
+            // something outside kills it -- means the engine never reaches
+            // M_SaveDefaults, so config.cfg is left truncated and the next run
+            // starts from a different state. That is not a tidiness problem: it
+            // silently destroys any comparison between two runs.
+            I_Quit();
+        }
+    }
+
+
+    // -glcheck drains the error queue once a frame and reports each distinct
+    // code the first time it appears.
+    //
+    // The core profile has no way of complaining otherwise: a call it removed
+    // raises GL_INVALID_ENUM and returns, the frame is drawn without it, and
+    // nothing is ever said. This is how the removed calls get found.
+    {
+        static int check = -1;
+        static dboolean seen[8];
+
+        if(check < 0) {
+            check = M_CheckParm("-glcheck") ? 1 : 0;
+            dmemset(seen, 0, sizeof(seen));
+        }
+
+        if(check) {
+            GLenum err;
+            int drained = 0;
+
+            // Bounded: a driver that keeps answering would hang the frame.
+            while((err = dglGetError()) != GL_NO_ERROR && drained++ < 64) {
+                unsigned slot = (unsigned)(err - GL_INVALID_ENUM);
+
+                if(slot >= 8) {
+                    slot = 7;
+                }
+
+                if(!seen[slot]) {
+                    seen[slot] = true;
+                    CON_Warnf("GL error 0x%x raised during frame\n", (unsigned)err);
+                }
+            }
+        }
+    }
+
     Video->end_frame();
 }
 
@@ -284,9 +424,46 @@ void GL_SetTextureFilter(void) {
             dglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, max_anisotropic);
         }
         else {
-            dglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 0);
+            // 1, not 0: the legal range is [1, max], and 0 is a
+            // GL_INVALID_VALUE. 1 is what "no anisotropic filtering" means.
+            dglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.0f);
         }
     }
+}
+
+//
+// GL_SetTextureFilterHud
+//
+// [kex] st_HudLinearFilter.
+//
+// r_Filter picks one filter for everything the engine uploads, and linear is the
+// right answer for the world: a wall seen at an angle has no pixel grid of its
+// own to preserve, so smoothing between texels is what you want. The interface
+// is the opposite case. The status bar, the fonts and the menu graphics are
+// authored at the N64's own 320x240 and then stretched whole to the window, one
+// grid on to another; filtering between them only softens the letters and puts a
+// halo round the numbers. So it gets its own switch.
+//
+// Three places in the engine had already worked this out and hard-coded
+// GL_NEAREST -- the console font, the Japanese messages, and the screen capture
+// in GL_ScreenToTexture. This is the same decision, made once, and made
+// answerable. Set at draw time rather than baked at upload, which is why it
+// needs no GL_DumpTextures callback the way r_Filter does: it takes effect on
+// the next frame.
+//
+// Anisotropy is deliberately not touched. It only ever applies to a minified
+// texture at an angle, which no part of a flat interface quad ever is.
+//
+
+void GL_SetTextureFilterHud(void) {
+    if(!usingGL) {
+        return;
+    }
+
+    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                     st_hudlinearfilter ? GL_LINEAR : GL_NEAREST);
+    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                     st_hudlinearfilter ? GL_LINEAR : GL_NEAREST);
 }
 
 //
@@ -556,6 +733,12 @@ void GL_Init(void) {
     gladLoadGLLoader(SDL_GL_GetProcAddress);
 #endif
 
+
+    // Asked for the log line it prints, and because a driver is free to hand
+    // back something other than what SDL requested. Nothing branches on it any
+    // more; it is a statement of fact about the context we ended up with.
+    imp::gl33::core_profile();
+
     gl_vendor = dglGetString(GL_VENDOR);
     I_Printf("GL_VENDOR: %s\n", gl_vendor);
     gl_renderer = dglGetString(GL_RENDERER);
@@ -564,8 +747,19 @@ void GL_Init(void) {
     I_Printf("GL_VERSION: %s\n", gl_version);
     dglGetIntegerv(GL_MAX_TEXTURE_SIZE, &gl_max_texture_size);
     I_Printf("GL_MAX_TEXTURE_SIZE: %i\n", gl_max_texture_size);
-    dglGetIntegerv(GL_MAX_TEXTURE_UNITS_ARB, &gl_max_texture_units);
-    I_Printf("GL_MAX_TEXTURE_UNITS_ARB: %i\n", gl_max_texture_units);
+    // GL_MAX_TEXTURE_UNITS_ARB counted fixed-function combiner units, which the
+    // core profile no longer has. GL_MAX_TEXTURE_IMAGE_UNITS is its
+    // replacement: how many samplers a fragment shader may bind.
+    dglGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &gl_max_texture_units);
+    I_Printf("GL_MAX_TEXTURE_IMAGE_UNITS: %i\n", gl_max_texture_units);
+
+    // The extension rescan that used to sit here is gone. It existed because
+    // glad was generated for 1.4 and scanned with a single
+    // glGetString(GL_EXTENSIONS), which a core profile refuses -- leaving every
+    // GLAD_GL_* false and, through r_TexNonPowResize, every sprite in the game
+    // one power of two too big. Glad's 3.3 loader scans with glGetStringi and
+    // gets it right, and the five flags that no longer exist are constants in
+    // gl_main.h.
 
     if(gl_max_texture_units <= 2) {
         CON_Warnf("Not enough texture units supported...\n");
@@ -579,16 +773,25 @@ void GL_Init(void) {
     dglEnable(GL_CULL_FACE);
     dglCullFace(GL_FRONT);
     dglShadeModel(GL_SMOOTH);
-    dglHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+    // Both hints were removed in the core profile; GL_FOG_HINT went with fog
+    // itself, and perspective correction is no longer optional.
+    // GL_PERSPECTIVE_CORRECTION_HINT: gone with the fixed pipeline. Core is
+    // perspective-correct and has no say in the matter.
     dglDepthFunc(GL_LEQUAL);
     dglAlphaFunc(GL_GEQUAL, ALPHACLEARGLOBAL);
     dglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     dglFogi(GL_FOG_MODE, GL_LINEAR);
-    dglHint(GL_FOG_HINT, GL_NICEST);
+    // GL_FOG_HINT: likewise. The fog is computed in doomSceneMain now.
     dglEnable(GL_SCISSOR_TEST);
     dglEnable(GL_DITHER);
 
     usingGL = true;
+
+    // Before the first GL_SetTextureFilter, not after: that call reads
+    // max_anisotropic, and a zero there is outside the legal [1, max] range.
+    if(GLAD_GL_EXT_texture_filter_anisotropic) {
+        dglGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_anisotropic);
+    }
 
     GL_SetTextureFilter();
     GL_SetDefaultCombiner();
@@ -616,10 +819,8 @@ void GL_Init(void) {
 
     glScaleFactor = 1.0f;
 
-    if(GLAD_GL_EXT_texture_filter_anisotropic) {
-        dglGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_anisotropic);
-    }
-
     G_AddCommand("dumpglext", CMD_DumpGLExtensions, 0);
+
+    shader::init();
 }
 

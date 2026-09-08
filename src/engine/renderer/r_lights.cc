@@ -241,7 +241,27 @@ void R_SetLightFactor(float lightfactor) {
 void R_RefreshBrightness(void) {
     float factor;
 
-    factor = (((infraredFactor > *i_brightness) ? infraredFactor : *i_brightness) + 100.0f);
+    //
+    // The 100 belongs to the brightness setting, not to the comparison.
+    //
+    // The original is P_RefreshBrightness (DOOM64-RE, p_misc.c:661):
+    //
+    //     factor = brightness + 100;
+    //     if (factor < infraredFactor) factor = infraredFactor;
+    //
+    // that is, max(brightness + 100, infraredFactor). This used to read
+    // max(infraredFactor, brightness) + 100, which agrees in normal play --
+    // infraredFactor is 0 -- but not while the light amplification goggles are
+    // up. They set it to 300, so the world came out at 400 instead of 300:
+    // a third brighter than the original, for the twenty seconds the powerup
+    // lasts and the five it fades over.
+    //
+    factor = *i_brightness + 100.0f;
+
+    if (factor < infraredFactor) {
+        factor = static_cast<float>(infraredFactor);
+    }
+
     R_SetLightFactor(factor);
 }
 

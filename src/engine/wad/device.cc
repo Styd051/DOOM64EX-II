@@ -1,4 +1,5 @@
 #include <map>
+#include <cctype>
 #include <algorithm>
 #include <unordered_map>
 
@@ -22,7 +23,7 @@ namespace {
   public:
       using iterator = typename std::vector<ILumpPtr>::iterator;
 
-      void push_back(ILumpPtr&& lump)
+      void push_back(ILumpPtr&& lump, Vector<ILumpPtr>& shadowed)
       {
           auto it = m_index_by_name.find(lump->name());
           if (lump->name() == "?" || it == m_index_by_name.end()) {
@@ -31,6 +32,14 @@ namespace {
               m_lumps.push_back(std::move(lump));
           } else {
               std::swap(m_lumps[it->second], lump);
+
+              // `lump` now holds whatever this one displaced. Section sizes and
+              // indices must not change -- numtextures and friends are derived
+              // from them -- so the loser stays out of the section, but it is
+              // kept alive so wad::open_path can still reach it. Several files
+              // legitimately share one eight-character name: progs/common.inc,
+              // progs/common_glsl.inc and progs/common_hlsl.inc are all COMMON.
+              shadowed.push_back(std::move(lump));
           }
       }
 
@@ -61,6 +70,27 @@ namespace {
   };
 
   Array<SectionLumps, num_sections> section_lumps_;
+
+  /* Lumps pushed out of their section by a later one of the same name. Only
+   * reachable through wad::open_path. */
+  Vector<ILumpPtr> shadowed_lumps_;
+
+  /* Lookup by device-relative path, built on first use. Rebuilt whenever a
+   * device is added, since that can replace lumps in place. */
+  std::unordered_map<String, ILump*> real_name_index_;
+  bool real_name_index_built_ {};
+
+  String normalize_path_(StringView path)
+  {
+      String r;
+      r.reserve(path.length());
+      for (auto ch : path) {
+          if (ch == '\\')
+              ch = '/';
+          r.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+      }
+      return r;
+  }
 }
 
 bool wad::add_device(IDevicePtr device)
@@ -68,12 +98,14 @@ bool wad::add_device(IDevicePtr device)
     auto lumps = device->read_all();
     for (auto& lump : lumps) {
         auto& list = section_lumps_[static_cast<size_t>(lump->section())];
-        list.push_back(std::move(lump));
+        list.push_back(std::move(lump), shadowed_lumps_);
     }
 
     log::info("Added {} lumps from '{}'", lumps.size(), "");
 
     devices_.emplace_back(std::move(device));
+
+    real_name_index_built_ = false;
 
     return true;
 }
@@ -150,6 +182,57 @@ Optional<Lump> wad::open(size_t index)
     }
 
     return nullopt;
+}
+
+Optional<Lump> wad::open_path(StringView path)
+{
+    if (!real_name_index_built_) {
+        real_name_index_.clear();
+
+        // Shadowed first, so a lump that is still in its section wins if two
+        // devices happen to carry the same path.
+        for (auto& lump : shadowed_lumps_) {
+            auto real = lump->real_name();
+            if (!real.empty())
+                real_name_index_[normalize_path_(real)] = lump.get();
+        }
+
+        for (auto& section : section_lumps_) {
+            for (auto& lump : section) {
+                auto real = lump->real_name();
+                if (real.empty())
+                    continue;
+
+                // Assign rather than emplace: like wad::open, a device added
+                // later wins over one added earlier.
+                real_name_index_[normalize_path_(real)] = lump.get();
+            }
+        }
+
+        real_name_index_built_ = true;
+    }
+
+    auto it = real_name_index_.find(normalize_path_(path));
+    if (it == real_name_index_.end())
+        return nullopt;
+
+    return make_optional<Lump>(*it->second);
+}
+
+Vector<String> wad::list_paths(StringView prefix)
+{
+    // Cheapest way to guarantee the index exists.
+    open_path(""_sv);
+
+    String want = normalize_path_(prefix);
+
+    Vector<String> paths;
+    for (const auto& pair : real_name_index_) {
+        if (pair.first.compare(0, want.size(), want) == 0)
+            paths.push_back(pair.second->real_name());
+    }
+
+    return paths;
 }
 
 ArrayView<ILumpPtr> wad::list_section(wad::Section section)

@@ -69,10 +69,29 @@ void IN_Start(void) {
 
     dmemset(fInterString, 0, 16*32);
 
-    fcluster = P_GetCluster(nextmap);
+    // Which cluster's text this is depends on why the finale was reached, and
+    // WI_Ticker already made that distinction -- this has to make the same one.
+    //
+    // A cluster with EXITTEXT is shown on the way *out* of it; one with
+    // ENTERTEXT on the way *in*. Taking nextmap's cluster unconditionally got
+    // that backwards at the end of the game: MAP28 carries cluster 6, the
+    // EXITTEXT that closes DOOM 64, but nextmap is 29, and MAP29 belongs to
+    // cluster 2. So the engine showed cluster 2's arrival text instead -- and
+    // since that one has no scrolltextend, IN_Finish asked for a level rather
+    // than the cast sequence.
+    {
+        clusterdef_t* leaving = P_GetCluster(gamemap);
+        clusterdef_t* entering = P_GetCluster(nextmap);
 
-    if(!fcluster) {
-        fcluster = P_GetCluster(gamemap);
+        if(leaving && leaving != entering && !leaving->enteronly) {
+            fcluster = leaving;
+        }
+        else if(entering) {
+            fcluster = entering;
+        }
+        else {
+            fcluster = leaving;
+        }
     }
 
     // try to bail out if no cluster is found at all
@@ -208,7 +227,10 @@ bool IN_Ticker(void) {
 
         if(!fcluster->enteronly) {
             fstopmusic = false;
-            //return ga_finale;
+            // Same as WI_Ticker: the action goes through gameaction, since a
+            // dboolean return cannot carry one. This is the step from the
+            // cluster's exit text to the cast sequence.
+            gameaction = ga_finale;
             return true;
         }
 

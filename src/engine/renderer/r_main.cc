@@ -46,6 +46,7 @@
 #include "z_zone.h"
 #include "con_console.h"
 #include "r_drawlist.h"
+#include "m_misc.h"
 #include "gl_draw.h"
 #include "g_actions.h"
 
@@ -97,6 +98,16 @@ cvar::BoolVar r_filter          = false;
 cvar::BoolVar r_texnonpowresize = false;
 cvar::BoolVar r_anisotropic     = false;
 cvar::BoolVar r_texturecombiner = false;
+//
+// See R_SetupFrame. Off by default: the smoothness is worth the tic of latency
+// on a pad, and a mouse player who disagrees has the switch.
+//
+cvar::BoolVar r_forceanglereset = false;
+//
+// The two BSP debug views. See R_Subsector in r_bsp.cc.
+//
+cvar::BoolVar r_colorizesubsectors = false;
+cvar::IntVar r_maxsubsectordraw = 0;
 
 extern cvar::BoolVar i_interpolateframes;
 extern cvar::BoolVar p_usecontext;
@@ -292,7 +303,17 @@ void R_Init(void) {
         (r_filter,          "r_Filter",          "TODO")
         (r_texnonpowresize, "r_TexNonPowResize", "Resize non-power-of-2 textures")
         (r_anisotropic,     "r_Anisotropic",     "Anisotropic filtering")
-        (r_texturecombiner, "r_TextureCombiner", "TODO");
+        (r_texturecombiner, "r_TextureCombiner", "TODO")
+        (r_forceanglereset, "r_ForceInterpolatedAngleReset", "Completely reset view angle interpolation every frame");
+
+    // Not saved, for the reason r_GBufferShow is not: an engine that comes back
+    // up after a restart drawing four subsectors in fluorescent green looks
+    // exactly like a rendering bug, and sends whoever sees it hunting for one.
+    cvar::Register{ cvar::Flag::noconfig }
+        (r_colorizesubsectors, "r_ColorizeSubsectors",
+         "Applies a unique color to every subsector when drawn")
+        (r_maxsubsectordraw, "r_MaxSubsectorDraw",
+         "Limits the number of subsectors drawn, 0 for all. Useful to see the order in which the view traverses the BSP");
 
     r_colorscale.set_callback([](const int&) {
         GL_SetColorScale();
@@ -413,9 +434,52 @@ void R_PrecacheLevel(void) {
 
     num = 0;
 
+    // -animdesync reproduces, on demand, the state a level is normally entered
+    // in: every animation part-way through its cycle, so texturetranslation no
+    // longer maps a base index to itself. Arriving straight on a map with -warp
+    // never produces it, which is why the white-texture bug would not reproduce
+    // in a test while happening reliably in a real playthrough.
+    if(M_CheckParm("-animdesync")) {
+        for(int a = 0; a < numanimdef; a++) {
+            if(animdefs[a].palette) {
+                continue;
+            }
+
+            auto l = wad::open(wad::Section::textures, animdefs[a].name);
+
+            if(!l) {
+                continue;
+            }
+
+            int base = static_cast<int>(l.value().section_index());
+            texturetranslation[base] = base + 1;
+        }
+
+        CON_Printf(WHITE, "animdesync: animations advanced one frame\n");
+    }
+
     for(i = 0; i < numtextures; i++) {
         if(texturepresent[i]) {
+            // Precache the texture itself, not the frame it happens to be
+            // showing. GL_BindWorldTexture starts by applying
+            // texturetranslation, so for an animated texture whose animation is
+            // mid-cycle -- which is every one of them after a level or two --
+            // this uploaded frame n and left the base index untouched.
+            //
+            // That mattered far beyond the upload: GL_BindWorldTexture is also
+            // the only place texturewidth and textureheight are ever written,
+            // and R_RenderWall divides by them. A base index that was never
+            // uploaded kept width 0, the division produced infinite texture
+            // coordinates, and the wall came out a flat pale colour.
+            //
+            // Which textures were hit depended on the animation phase at
+            // precache time, so it moved between runs and between saves. That
+            // is the white-texture bug.
+            word saved = texturetranslation[i];
+
+            texturetranslation[i] = i;
             GL_BindWorldTexture(i, 0, 0);
+            texturetranslation[i] = saved;
             num++;
 
             for(p = 0; p < numanimdef; p++) {
@@ -440,6 +504,46 @@ void R_PrecacheLevel(void) {
     }
 
     CON_DPrintf("%i world textures cached\n", num);
+
+    // -texcheck verifies the invariant that the white-texture bug broke: a
+    // non-zero slot in textureptr must be a texture object OpenGL knows about.
+    //
+    // A slot that holds a number GL has never issued is not an error at bind
+    // time -- glBindTexture creates an empty object for it -- so nothing
+    // complains, the upload is skipped, and the surface samples white forever.
+    // The only way to see it is to ask.
+    if(M_CheckParm("-texcheck")) {
+        int bad = 0;
+        int checked = 0;
+
+        for(i = 0; i < numtextures; i++) {
+            if(!texturepresent[i] || !textureptr[i]) {
+                continue;
+            }
+
+            dtexture id = textureptr[i][palettetranslation[i]];
+
+            if(!id) {
+                continue;
+            }
+
+            checked++;
+
+            if(!glIsTexture(id)) {
+                bad++;
+                CON_Warnf("texcheck: texture %i holds GL name %u, which is not "
+                          "a texture object\n", i, (unsigned)id);
+            }
+        }
+
+        CON_Printf(WHITE, "texcheck: %i of %i uploaded world textures are bogus\n",
+                   bad, checked);
+
+        // And the animated ones in full: their frames are the only textures the
+        // map never names directly, so they are the ones a wrong index or an
+        // empty atlas entry would hit without anything else noticing.
+        GL_AnimDump();
+    }
 
     for(mo = mobjhead.next; mo != &mobjhead; mo = mo->next) {
         spritepresent[mo->sprite] = 1;
@@ -509,6 +613,9 @@ void R_SetupFrame(player_t *player) {
     drawlist[DLT_FLAT].index = 0;
     drawlist[DLT_SPRITE].index = 0;
 
+    // r_MaxSubsectorDraw counts per frame, not per level
+    rendersubsectorcount = 0;
+
     renderplayer = player;
 
     //
@@ -528,8 +635,21 @@ void R_SetupFrame(player_t *player) {
         pitch += player->recoilpitch;
     }
 
-    viewangle   = R_Interpolate(angle, frame_angle, *i_interpolateframes);
-    viewpitch   = R_Interpolate(pitch, frame_pitch, *i_interpolateframes);
+    //
+    // [kex] r_ForceInterpolatedAngleReset.
+    //
+    // The camera angle only moves when a tic runs, so interpolating it spreads
+    // each turn across the frames that follow. That looks smooth, and it puts up
+    // to a whole tic -- 28 ms -- between moving the mouse and seeing the view
+    // answer. Resetting the interpolation every frame trades one for the other:
+    // the angle snaps to wherever the tic left it, so aiming responds at once and
+    // steps at 35 Hz instead of gliding. Position stays interpolated either way,
+    // so the world still slides smoothly beneath a stepping view.
+    //
+    dboolean anglelerp = *i_interpolateframes && !*r_forceanglereset;
+
+    viewangle   = R_Interpolate(angle, frame_angle, anglelerp);
+    viewpitch   = R_Interpolate(pitch, frame_pitch, anglelerp);
     viewx       = R_Interpolate(viewcamera->x, frame_viewx, *i_interpolateframes);
     viewy       = R_Interpolate(viewcamera->y, frame_viewy, *i_interpolateframes);
     viewz       = R_Interpolate(cam_z, frame_viewz, *i_interpolateframes);

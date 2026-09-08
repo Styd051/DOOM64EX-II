@@ -26,6 +26,7 @@
 //-----------------------------------------------------------------------------
 
 #include "r_local.h"
+#include "shader/matrix.hh"
 #include "tables.h"
 #include "m_fixed.h"
 #include "z_zone.h"
@@ -284,8 +285,19 @@ viewMatrix[g] * projMatrix[h])
 void R_FrustrumSetup(void) {
     float clip[16];
 
-    dglGetDoublev(GL_PROJECTION_MATRIX, projMatrix);
-    dglGetDoublev(GL_MODELVIEW_MATRIX, viewMatrix);
+    // From the engine's own matrix stack, not glGetDoublev: the core profile
+    // has no stack to read. The frustum culler was the one place outside the
+    // renderer that depended on it, and freezing the fixed stack culled the
+    // entire level while everything else carried on working.
+    {
+        const float *p = shader::matrix_get(shader::MatrixKind::projection);
+        const float *v = shader::matrix_get(shader::MatrixKind::modelview);
+
+        for(int i = 0; i < 16; i++) {
+            projMatrix[i] = p[i];
+            viewMatrix[i] = v[i];
+        }
+    }
 
     clip[0]  = CALCMATRIX(0, 0, 1, 4, 2, 8, 3, 12);
     clip[1]  = CALCMATRIX(0, 1, 1, 5, 2, 9, 3, 13);

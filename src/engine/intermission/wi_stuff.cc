@@ -204,7 +204,15 @@ bool WI_Ticker(void) {
 
         if((nextcluster && cluster != nextcluster && nextcluster->enteronly) ||
             (cluster && cluster != nextcluster && !cluster->enteronly)) {
-            //return ga_victory;
+            // Through gameaction, not the return value. dboolean is a typedef
+            // for bool, so `return ga_victory` collapsed to 1 -- which is
+            // ga_loadlevel -- and that is why it ended up commented out rather
+            // than fixed. D_MiniLoop reads gameaction straight after calling
+            // the ticker and lets it win, so the action arrives intact.
+            //
+            // Without this the cluster text never ran: the end of MAP28 went
+            // to the next map instead of the finale and the cast.
+            gameaction = ga_victory;
             return true;
         }
 

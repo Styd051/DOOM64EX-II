@@ -230,8 +230,10 @@ static void D_FinishDraw(void) {
     // send out any new accumulation
     NetUpdate();
 
-    // normal update
-    Video->end_frame();
+    // normal update. Through GL_SwapBuffers rather than Video->end_frame
+    // directly, so there is one place where a frame is presented -- r_wipe.cc
+    // already went through it, this one did not.
+    GL_SwapBuffers();
 
     if(i_interpolateframes) {
         I_EndDisplay();

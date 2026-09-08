@@ -30,6 +30,7 @@
 #include "gl_texture.h"
 #include "con_console.h"
 #include "i_system.h"
+#include "shader/draw.hh"
 
 #define MAXINDICES  0x10000
 
@@ -39,6 +40,25 @@ static word indicecnt = 0;
 static word drawIndices[MAXINDICES];
 
 extern cvar::BoolVar r_drawtris;
+
+
+//
+// Whether this draw goes through the programmable pipeline.
+//
+// In a core profile there is no choice to make: the fixed path draws with
+// client arrays, which the profile removed. r_Shaders 0 there would render
+// nothing at all, so the cvar only has a say while the fixed pipeline still
+// exists.
+//
+static dboolean DGL_UseShaders(void) {
+    if(!shader::draw_ready()) {
+        return false;
+    }
+
+    // Always, now. The alternative was client arrays and glDrawElements without
+    // a vertex array object, which a core context has no way to honour.
+    return true;
+}
 
 //
 // dglLogError
@@ -130,14 +150,21 @@ void dglDrawGeometry(dword count, vtx_t *vtx) {
     I_Printf("dglDrawGeometry(count=0x%x, vtx=0x%p)\n", count, vtx);
 #endif
 
-    if(GLAD_GL_EXT_compiled_vertex_array) {
-        dglLockArraysEXT(0, count);
+    // The one place every triangle in the engine goes through, so this is where
+    // the programmable path plugs in. r_Shaders off means nothing changes.
+    if(DGL_UseShaders()) {
+        shader::draw_geometry(vtx, count, drawIndices, indicecnt);
     }
+    else {
+        if(GLAD_GL_EXT_compiled_vertex_array) {
+            dglLockArraysEXT(0, count);
+        }
 
-    dglDrawElements(GL_TRIANGLES, indicecnt, GL_UNSIGNED_SHORT, drawIndices);
+        dglDrawElements(GL_TRIANGLES, indicecnt, GL_UNSIGNED_SHORT, drawIndices);
 
-    if(GLAD_GL_EXT_compiled_vertex_array) {
-        dglUnlockArraysEXT();
+        if(GLAD_GL_EXT_compiled_vertex_array) {
+            dglUnlockArraysEXT();
+        }
     }
 
     if(r_drawtris) {
@@ -234,6 +261,32 @@ void dglViewFrustum(int width, int height, rfloat fovy, rfloat znear) {
     dglMultMatrixf(m);
 }
 
+
+//
+// dglDrawGeometryPrim
+//
+// Same funnel as dglDrawGeometry, but with the indices and the primitive given
+// explicitly. The immediate-mode emulation needs GL_LINES, which the accumulated
+// index buffer above cannot express.
+//
+
+void dglDrawGeometryPrim(dword count, vtx_t *vtx, const word *indices,
+                         dword indexcount, GLenum mode) {
+    if(!indexcount) {
+        return;
+    }
+
+    if(DGL_UseShaders()) {
+        shader::draw_geometry(vtx, count, indices, indexcount, mode);
+    }
+    else {
+        dglDrawElements(mode, indexcount, GL_UNSIGNED_SHORT, indices);
+    }
+
+    if(devparm) {
+        statindice += indexcount;
+    }
+}
 //
 // dglSetVertexColor
 //

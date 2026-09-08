@@ -1,4 +1,5 @@
 graphics/
+progs/
 animdefs.txt
 mapinfo.txt
 palplay3.act

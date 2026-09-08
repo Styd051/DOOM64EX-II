@@ -216,7 +216,12 @@ namespace {
                   }
                   auto name = _normalize(filename.substr(loc)).substr(0, 8);
 
-                  auto lump_info = ZipInfo { name, "", entry.method == 8, entry.local_offset, entry.uncompressed, section };
+                  // Keep the full archive path around. Lump names are clamped to
+                  // eight alphanumeric characters, which collides for anything
+                  // organised in directories (progs/common.inc and
+                  // progs/common_glsl.inc both normalise to "COMMON"). Lookups
+                  // that need to tell those apart go through wad::open_path.
+                  auto lump_info = ZipInfo { name, filename, entry.method == 8, entry.local_offset, entry.uncompressed, section };
                   auto lump_ptr = std::make_unique<ZipLump>(*this, lump_info);
                   lumps.emplace_back(std::move(lump_ptr));
               } else {

@@ -507,8 +507,19 @@ void P_PlayerZMovement(mobj_t* mo) {
         mo->z = mo->floorz;
     }
     else {
+        //
+        // DOOM64-RE p_user.c:195, where GRAVITY is FRACUNIT*4 --
+        //
+        //     if (mo->momz == 0) mo->momz = -(GRAVITY/2);
+        //     else               mo->momz -= (GRAVITY/4);
+        //
+        // Their GRAVITY/4 is our GRAVITY, so the acceleration below was already
+        // right. The first push was not: it should be two of ours, not one.
+        // The squat threshold above (-GRAVITY*8) is their -(GRAVITY*2) and has
+        // been correct all along, which is what made the scale legible.
+        //
         if(mo->momz == 0) {
-            mo->momz = -GRAVITY;
+            mo->momz = -(GRAVITY*2);
         }
         else {
             mo->momz -= GRAVITY;

@@ -11,10 +11,6 @@ namespace imp {
       exclusive // Exclusive fullscreen
   };
 
-  enum struct OpenGLVer {
-      gl14,
-      gl33
-  };
 
   struct VideoMode {
       int width;

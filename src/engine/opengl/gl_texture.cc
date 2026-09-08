@@ -38,6 +38,7 @@
 #include "g_actions.h"
 #include <wad/section.hh>
 #include <wad.hh>
+#include "shader/atlas.hh"
 
 #define GL_MAX_TEX_UNITS    4
 
@@ -122,6 +123,132 @@ static CMD(DumpTextures) {
 
 static CMD(ResetTextures) {
     GL_ResetTextures();
+}
+
+//
+// CMD_AnimDump
+//
+// Prints what the engine currently believes about every ANIMDEFS animation.
+//
+// A texture that renders white is a texture the engine thinks it has and does
+// not: the number in textureptr is a GL name nothing was ever uploaded to, or
+// the atlas entry it resolves to is empty. Neither shows up as an error -- one
+// binds an empty texture object, the other samples an empty rectangle -- so the
+// only way to see it is to print the state and read it.
+//
+// Columns: the frame being displayed now (translation), the GL name held for
+// it, whether OpenGL agrees that name is a texture, and the atlas entry.
+//
+
+void GL_AnimDump(void) {
+    log::info("{:<9} {:>4} {:>4} {:>4} {:>9} {:>9} {:>3}  {}",
+              "NAME", "IDX", "SHOW", "PAL", "SIZE", "GLNAME", "OK", "ATLAS");
+
+    for(int a = 0; a < numanimdef; a++) {
+        auto base_lump = wad::open(wad::Section::textures, animdefs[a].name);
+
+        if(!base_lump) {
+            log::warn("{} not found in the textures section", animdefs[a].name);
+            continue;
+        }
+
+        int base = static_cast<int>(base_lump.value().section_index());
+
+        for(int j = 0; j < animdefs[a].frames; j++) {
+            int idx = base + j;
+
+            if(idx < 0 || idx >= numtextures) {
+                log::warn("{} frame {} -> index {} out of range (numtextures {})",
+                          animdefs[a].name, j, idx, numtextures);
+                continue;
+            }
+
+            int show = texturetranslation[base];
+            int pal  = palettetranslation[idx];
+            dtexture id = textureptr[idx] ? textureptr[idx][pal] : 0;
+            const char* ok = id ? (glIsTexture(id) ? "oui" : "NON") : "-";
+
+            const auto& e = imp::shader::atlas_world(idx);
+
+            auto nm = wad::open(wad::Section::textures, idx);
+
+            // SIZE is the one that decides. R_RenderWall divides by it, so a
+            // 0x0 here is an infinite texture coordinate and a white wall.
+            log::info("{:<9} {:>4} {:>4} {:>4} {:>9} {:>9} {:>3}  {} {}x{} layer{} off{}",
+                      nm ? nm.value().name() : String{"?"},
+                      idx,
+                      (j == 0) ? show : -1,
+                      pal,
+                      fmt::format("{}x{}", texturewidth[idx], textureheight[idx]),
+                      static_cast<unsigned>(id),
+                      ok,
+                      e.valid() ? "ok  " : "EMPTY",
+                      static_cast<int>(e.width), static_cast<int>(e.height),
+                      static_cast<int>(e.layer), static_cast<unsigned>(e.offset));
+        }
+    }
+}
+
+static CMD(AnimDump) {
+    GL_AnimDump();
+}
+
+//
+// CMD_SectorDump
+//
+// Every wall of the sector the player is standing in, with the texture each of
+// its sides actually carries.
+//
+// animdump answers "is this texture healthy"; this one answers the question
+// that has to come first -- "is this the texture I think I am looking at". A
+// map's own idea of what is on a wall is the one thing no amount of inspecting
+// the texture system can tell you.
+//
+
+// Returns a copy, not a pointer into a shared buffer. Three of these are
+// evaluated for one log line, and a static buffer made all three show whichever
+// call the compiler happened to run last.
+static String tex_name_(int num) {
+    if(num < 0 || num >= numtextures) {
+        return fmt::format("<{}>", num);
+    }
+
+    auto l = wad::open(wad::Section::textures, num);
+    return l ? l.value().name() : String{"?"};
+}
+
+static CMD(SectorDump) {
+    if(!players[consoleplayer].mo) {
+        log::warn("sectordump: no player in the world");
+        return;
+    }
+
+    sector_t* sec = players[consoleplayer].mo->subsector->sector;
+    int secnum = static_cast<int>(sec - sectors);
+
+    log::info("sector {}: {} lines, light {}, flags 0x{:x}",
+              secnum, sec->linecount, sec->lightlevel, sec->flags);
+    log::info("{:>6} {:>5} {:>4}  {:>4} {:<9} {:>4} {:<9} {:>4} {:<9}",
+              "LINE", "SIDE", "NUM", "TOP", "", "MID", "", "BOT", "");
+
+    for(int i = 0; i < sec->linecount; i++) {
+        line_t* ld = sec->lines[i];
+        int lnum = static_cast<int>(ld - lines);
+
+        for(int s = 0; s < 2; s++) {
+            if(ld->sidenum[s] == (word)-1 || ld->sidenum[s] >= numsides) {
+                continue;
+            }
+
+            side_t* sd = &sides[ld->sidenum[s]];
+
+            log::info("{:>6} {:>5} {:>4}  {:>4} {:<9} {:>4} {:<9} {:>4} {:<9}",
+                      lnum, s == 0 ? "front" : "back", (int)ld->sidenum[s],
+                      (int)sd->toptexture,    tex_name_(sd->toptexture),
+                      (int)sd->midtexture,    tex_name_(sd->midtexture),
+                      (int)sd->bottomtexture, tex_name_(sd->bottomtexture));
+        }
+    }
 }
 
 //
@@ -633,6 +760,13 @@ void GL_UpdateEnvTexture(rcolor color) {
 
     dglActiveTextureARB(GL_TEXTURE1_ARB);
 
+    // Make sure the env texture is the one bound here before writing into it.
+    // It is bound once, at precache time, and anything that binds a texture
+    // while unit 1 is active takes its place -- after which this
+    // glTexSubImage2D lands on an object with no storage, which is a
+    // GL_INVALID_VALUE every frame.
+    GL_BindEnvTexture();
+
     env             = color;
     lastenvcolor    = color;
     c               = (byte*)rgb;
@@ -697,6 +831,25 @@ void GL_SetTextureUnit(int unit, dboolean enable) {
 
     dglActiveTextureARB(GL_TEXTURE0_ARB + unit);
     GL_SetState(GLSTATE_TEXTURE0 + unit, enable);
+}
+
+//
+// GL_SetTextureMode
+//
+
+//
+// GL_GetTextureMode
+// The programmable path needs to reproduce the texture environment rather
+// than assume GL_MODULATE: the screen melt, the sky and the sprite lighting
+// all switch unit 0 to GL_ADD or GL_REPLACE.
+//
+
+GLenum GL_GetTextureMode(int unit) {
+    if(unit < 0 || unit >= GL_MAX_TEX_UNITS) {
+        return GL_MODULATE;
+    }
+
+    return gl_env_state[unit].mode;
 }
 
 //
@@ -859,6 +1012,8 @@ void GL_InitTextures(void) {
 
     G_AddCommand("dumptextures", CMD_DumpTextures, 0);
     G_AddCommand("resettextures", CMD_ResetTextures, 0);
+    G_AddCommand("animdump", CMD_AnimDump, 0);
+    G_AddCommand("sectordump", CMD_SectorDump, 0);
 }
 
 //

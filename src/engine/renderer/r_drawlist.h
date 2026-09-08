@@ -51,6 +51,10 @@ typedef struct {
     dtexture    texid;
     int         flags;
     int         params;
+    // which subsector the BSP walk was inside when this entry was added.
+    // Only r_ColorizeSubsectors reads it -- the drawlist is sorted by texture,
+    // so by the time it is processed there is no other way back to the walk.
+    int         subsector;
 } vtxlist_t;
 
 typedef struct {

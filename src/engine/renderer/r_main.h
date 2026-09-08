@@ -58,6 +58,13 @@ extern unsigned int glBindCalls;
 
 extern dboolean     bRenderSky;
 
+// Which subsector the BSP walk is inside, and how many it has reached this
+// frame. Debug state for r_ColorizeSubsectors and r_MaxSubsectorDraw; see
+// R_Subsector in r_bsp.cc.
+extern int          rendersubsector;
+extern int          rendersubsectorcount;
+rcolor              R_SubsectorColor(int num);
+
 extern cvar::FloatVar r_fov;
 extern cvar::BoolVar r_fillmode;
 extern cvar::BoolVar r_uniformtime;

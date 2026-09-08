@@ -28,6 +28,8 @@
 //-----------------------------------------------------------------------------
 
 #include "doomstat.h"
+#include "shader/postprocess.hh"
+#include "shader/draw.hh"
 #include "z_zone.h"
 #include "p_local.h"
 #include "p_macros.h"
@@ -397,11 +399,23 @@ void P_Drawer(void) {
         return;
     }
 
+    // The world goes into the off-screen buffer when a post-process pass is
+    // enabled, and comes back out through it. The automap and the status bar
+    // are drawn afterwards, to the window, so an anti-aliaser never blurs text.
+    imp::shader::post_begin();
+
     GL_ClearView(0xFF000000);
 
     if(!automapactive || am_overlay) {
         R_RenderPlayerView(&players[displayplayer]);
     }
+
+    imp::shader::post_end();
+    imp::shader::world_frame_done();
+
+    // Over the finished world, under the interface: a debug view you cannot
+    // read the status bar over is half a debug view.
+    imp::shader::post_show_vram();
 
     AM_Drawer();
     ST_Drawer();

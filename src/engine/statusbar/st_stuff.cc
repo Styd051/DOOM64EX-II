@@ -62,6 +62,12 @@ cvar::BoolVar m_messages           = true;
 cvar::StringVar m_playername       = "Player"s;
 cvar::BoolVar st_showpendingweapon = true;
 cvar::BoolVar st_showstats         = false;
+//
+// See GL_SetTextureFilterHud in gl_main.cc. Off, because the interface is a
+// pixel grid drawn on to a pixel grid and smoothing between the two only
+// softens the letters.
+//
+cvar::BoolVar st_hudlinearfilter   = false;
 
 extern cvar::BoolVar p_usecontext;
 extern cvar::BoolVar p_damageindicator;
@@ -578,6 +584,7 @@ static void ST_DrawStatus(void) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     if(st_drawhud >= 2) {
         GL_SetOrthoScale(0.725f);
@@ -678,6 +685,7 @@ void ST_DrawCrosshair(int x, int y, int slot, byte scalefactor, rcolor color) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     u = 1.0f / st_crosshairs;
     scale = scalefactor == 0 ? ST_CROSSHAIRSIZE : (ST_CROSSHAIRSIZE / (1 << scalefactor));
@@ -700,8 +708,7 @@ static void ST_DrawJMessage(int pic) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
-    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    GL_SetTextureFilterHud();
 
     GL_SetupAndDraw2DQuad(
         20,
@@ -1056,7 +1063,8 @@ void ST_Init(void) {
         (m_messages,           "m_Messages",           "TODO")
         (m_playername,         "m_PlayerName",         "TODO")
         (st_showpendingweapon, "st_ShowPendingWeapon", "TODO")
-        (st_showstats,         "st_ShowStats",         "TODO");
+        (st_showstats,         "st_ShowStats",         "TODO")
+        (st_hudlinearfilter,   "st_HudLinearFilter",   "Applies linear filter to HUD graphics");
 
     int i = 0;
 

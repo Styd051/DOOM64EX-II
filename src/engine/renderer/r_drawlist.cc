@@ -30,9 +30,12 @@
 #include "d_devstat.h"
 #include "r_local.h"
 #include "gl_texture.h"
+#include "shader/atlas.hh"
+#include "shader/draw.hh"
 #include "gl_main.h"
 #include "r_drawlist.h"
 #include "i_system.h"
+#include "con_console.h"
 #include "z_zone.h"
 
 static float envcolor[4] = { 0, 0, 0, 0 };
@@ -68,6 +71,7 @@ vtxlist_t *DL_AddVertexList(drawlist_t *dl) {
     list->flags = 0;
     list->texid = 0;
     list->params = 0;
+    list->subsector = rendersubsector;
 
     return &dl->list[dl->index++];
 }
@@ -124,8 +128,15 @@ void DL_ProcessDrawList(int tag, dboolean(*procfunc)(vtxlist_t*, int*)) {
 
         tail = &dl->list[dl->index];
 
+        // With the array texture in play, a batch no longer needs its own
+        // texture bound, its own wrap mode or its own light level: all three
+        // ride in the vertices. Consecutive entries can then be merged whatever
+        // their texture, which is the whole point of the atlas.
+        dboolean atlas = shader::atlas_ready();
+
         for(i = 0; i < dl->index; i++) {
             vtxlist_t* rover;
+            int first;
 
             head = &dl->list[i];
 
@@ -138,8 +149,62 @@ void DL_ProcessDrawList(int tag, dboolean(*procfunc)(vtxlist_t*, int*)) {
                 I_Error("DL_ProcessDrawList: Draw overflow by %i, tag=%i", dl->index, tag);
             }
 
+            first = drawcount;
+
             if(procfunc) {
                 if(!procfunc(head, &drawcount)) {
+                    continue;
+                }
+            }
+
+            // Resolve the texture up front. It used to happen at draw time,
+            // which was fine while a draw covered one texture; now that entries
+            // merge, each one has to stamp its own vertices.
+            if(tag == DLT_SPRITE) {
+                // textid in sprites contains hack that stores palette index data
+                palette = head->texid >> 24;
+            }
+
+            head->texid = (head->texid & 0xffff);
+
+            if(atlas) {
+                const auto& e = (tag == DLT_SPRITE)
+                                ? shader::atlas_sprite(head->texid, palette)
+                                : shader::atlas_world(head->texid);
+
+                if(e.valid()) {
+                    shader::stamp_batch(drawVertex + first, drawcount - first,
+                                        e.offset, e.layer, e.width, e.height,
+                                        (head->flags & DLF_MIRRORS) != 0,
+                                        (head->flags & DLF_MIRRORT) != 0,
+                                        head->params >> 1);
+                }
+                else {
+                    //
+                    // The entry says nothing about where this texture lives, so
+                    // the vertices never got their atlas coordinates -- and
+                    // without this they were drawn anyway, still carrying
+                    // whatever the previous batch had stamped on them. That
+                    // samples another texture's page, or empty space, which the
+                    // alpha test then discards: the thing is drawn, and
+                    // invisible. A monster you can hear and cannot see.
+                    //
+                    // Dropping the batch is the honest answer -- it is missing
+                    // either way, and this way it does not corrupt whatever
+                    // shares its draw. The warning names it once so the cause
+                    // is not silent.
+                    //
+                    static dboolean warned = false;
+
+                    if(!warned) {
+                        warned = true;
+                        CON_Warnf("DL_ProcessDrawList: %s %i has no atlas entry; "
+                                  "it will not be drawn. Run texatlasverify.\n",
+                                  tag == DLT_SPRITE ? "sprite" : "texture",
+                                  head->texid);
+                    }
+
+                    drawcount = first;
                     continue;
                 }
             }
@@ -148,7 +213,9 @@ void DL_ProcessDrawList(int tag, dboolean(*procfunc)(vtxlist_t*, int*)) {
 
             if(tag != DLT_SPRITE) {
                 if(rover != tail) {
-                    if(head->texid == rover->texid && head->params == rover->params) {
+                    // Sprites keep their own pass: the nightmare blend mode is
+                    // a real state change that no vertex attribute carries.
+                    if(atlas || (head->texid == rover->texid && head->params == rover->params)) {
                         continue;
                     }
                 }
@@ -158,9 +225,6 @@ void DL_ProcessDrawList(int tag, dboolean(*procfunc)(vtxlist_t*, int*)) {
             if(tag == DLT_SPRITE) {
                 int flags = ((visspritelist_t*)head->data)->spr->flags;
 
-                // textid in sprites contains hack that stores palette index data
-                palette = head->texid >> 24;
-                head->texid = head->texid & 0xffff;
                 GL_BindSpriteTexture(head->texid, palette);
 
                 // villsa 12152013 - change blend states for nightmare things
@@ -175,27 +239,32 @@ void DL_ProcessDrawList(int tag, dboolean(*procfunc)(vtxlist_t*, int*)) {
                     }
                 }
             }
-            else {
-                head->texid = (head->texid & 0xffff);
+            else if(!atlas) {
                 GL_BindWorldTexture(head->texid, 0, 0);
             }
 
             // non sprite textures must repeat or mirrored-repeat
-            if(tag == DLT_WALL) {
+            if(tag == DLT_WALL && !atlas) {
                 dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                                  head->flags & DLF_MIRRORS ? GL_MIRRORED_REPEAT : GL_REPEAT);
                 dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
                                  head->flags & DLF_MIRRORT ? GL_MIRRORED_REPEAT : GL_REPEAT);
             }
 
-            if(r_texturecombiner) {
-                envcolor[0] = envcolor[1] = envcolor[2] = ((float)head->params / 255.0f);
-                GL_SetEnvColor(envcolor);
-            }
-            else {
-                int l = (head->params >> 1);
+            if(!atlas) {
+                // The programmable path without an atlas still takes the light
+                // level as a uniform; with one it comes from the vertices.
+                shader::set_sector_light(head->params);
 
-                GL_UpdateEnvTexture(D_RGBA(l, l, l, 0xff));
+                if(r_texturecombiner) {
+                    envcolor[0] = envcolor[1] = envcolor[2] = ((float)head->params / 255.0f);
+                    GL_SetEnvColor(envcolor);
+                }
+                else {
+                    int l = (head->params >> 1);
+
+                    GL_UpdateEnvTexture(D_RGBA(l, l, l, 0xff));
+                }
             }
 
             dglDrawGeometry(drawcount, drawVertex);

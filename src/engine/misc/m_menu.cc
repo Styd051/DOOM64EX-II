@@ -58,6 +58,7 @@
 #include "m_menu.h"
 #include "m_fixed.h"
 #include "d_devstat.h"
+#include "shader/postprocess.hh"
 #include "r_local.h"
 #include "m_shift.h"
 #include "m_password.h"
@@ -83,7 +84,21 @@ extern int mouse_y;
 #define TEXTLINEHEIGHT      18
 #define MENUCOLORRED        D_RGBA(255, 0, 0, menualphacolor)
 #define MENUCOLORWHITE        D_RGBA(255, 255, 255, menualphacolor)
-#define MAXBRIGHTNESS        100
+//
+// The sector light factor is (i_Brightness + 100) / 100, which is the original's
+// own formula (DOOM64-RE, p_misc.c:661) and must not change. What changed is how
+// far the slider runs: 100 stopped at factor 2.0, the N64's maximum, while KEX
+// sits at 2.5 by default and reaches 3.0. Two hundred spans both.
+//
+//    slider   0%     25%     50%     75%     100%
+//    value    0      50      100     150     200
+//    factor   1.0    1.5     2.0     2.5     3.0
+//             |              |       |       |
+//        original min   original max |   KEX max
+//                              KEX default
+//
+#define MAXBRIGHTNESS        200
+#define BRIGHTNESSINC        2
 
 //
 // defaulted values
@@ -1569,6 +1584,7 @@ void M_ChangeYAxisMove(int choice) {
 //------------------------------------------------------------------------
 
 void M_ChangeBrightness(int choice);
+void M_ChangeEnvBrightness(int choice);
 void M_ChangeMessages(int choice);
 void M_ToggleHudDraw(int choice);
 void M_ToggleFlashOverlay(int choice);
@@ -1586,12 +1602,24 @@ extern cvar::BoolVar st_flashoverlay;
 extern cvar::BoolVar st_showpendingweapon;
 extern cvar::BoolVar st_showstats;
 extern cvar::FloatVar i_brightness;
+extern cvar::FloatVar r_brightness;
 extern cvar::BoolVar m_messages;
 extern cvar::BoolVar p_damageindicator;
+
+//
+// Environmental brightness is a multiplier from 0 to 2 with 1 neutral, the same
+// range KEX gives its own slider. Twenty steps of 0.1 put neutral exactly at the
+// middle notch, which is where their default sits.
+//
+#define ENVBRIGHTSTEPS      20
+#define ENVBRIGHTMAX        2.0f
+#define ENVBRIGHTINC        (ENVBRIGHTMAX / (float)ENVBRIGHTSTEPS)
 
 enum {
     dbrightness,
     display_empty1,
+    denvbrightness,
+    display_empty3,
     messages,
     statusbar,
     display_flash,
@@ -1607,7 +1635,9 @@ enum {
 };
 
 menuitem_t DisplayMenu[]= {
-    {3,"Brightness",M_ChangeBrightness, 'b'},
+    {3,"Overall Brightness",M_ChangeBrightness, 'b'},
+    {-1,"",0},
+    {3,"Environmental Brightness",M_ChangeEnvBrightness, 'e'},
     {-1,"",0},
     {2,"Messages:",M_ChangeMessages, 'm'},
     {2,"Status Bar:",M_ToggleHudDraw, 's'},
@@ -1625,6 +1655,8 @@ menuitem_t DisplayMenu[]= {
 const char* DisplayHints[display_end]= {
     "change light color intensity",
     NULL,
+    "brighten or darken the finished world image",
+    NULL,
     "toggle messages displaying on hud",
     "change look and style for hud",
     "use texture environment or a simple overlay for flashes",
@@ -1639,7 +1671,8 @@ const char* DisplayHints[display_end]= {
 };
 
 menuthermobar_t DisplayBars[] = {
-    { display_empty1, 100, i_brightness },
+    { display_empty1, MAXBRIGHTNESS, i_brightness },
+    { display_empty3, ENVBRIGHTSTEPS, r_brightness },
     { display_empty2, 255, st_crosshairopacity },
     { -1, 0 }
 };
@@ -1656,7 +1689,12 @@ menu_t DisplayDef = {
     false,
     -1,
     0,
-    0.715f,
+    // 0.715 until environmental brightness added two rows. The hint line at the
+    // foot of this menu is drawn at a fixed 90% of the screen height, and at the
+    // old scale fifteen entries reached past it: "Default" and "Return" ended up
+    // straddling the hint. A smaller scale is a taller ortho box, so the same
+    // fifteen rows now finish at 87% and the hint has the bottom to itself.
+    0.625f,
     DisplayHints,
     DisplayBars
 };
@@ -1670,6 +1708,11 @@ void M_DrawDisplay(void) {
     static const char* flashtype[2] = { "Environment", "Overlay" };
 
     M_DrawThermo(DisplayDef.x, DisplayDef.y+LINEHEIGHT*(dbrightness+1), MAXBRIGHTNESS, *i_brightness);
+
+    // The multiplier runs 0 to 2; the bar counts notches, so scale into them.
+    M_DrawThermo(DisplayDef.x, DisplayDef.y+LINEHEIGHT*(denvbrightness+1),
+                 ENVBRIGHTSTEPS, *r_brightness / ENVBRIGHTINC);
+
     Draw_BigText(DisplayDef.x + 140, DisplayDef.y+LINEHEIGHT*messages, MENUCOLORRED,
                  msgNames[*m_messages]);
     Draw_BigText(DisplayDef.x + 140, DisplayDef.y+LINEHEIGHT*statusbar, MENUCOLORRED,
@@ -1706,7 +1749,7 @@ void M_ChangeBrightness(int choice) {
     switch(choice) {
     case 0:
         if(i_brightness > 0.0f) {
-            M_SetCvar(i_brightness, i_brightness - 1);
+            M_SetCvar(i_brightness, i_brightness - BRIGHTNESSINC);
         }
         else {
             i_brightness = 0;
@@ -1714,7 +1757,7 @@ void M_ChangeBrightness(int choice) {
         break;
     case 1:
         if(i_brightness < (int)MAXBRIGHTNESS) {
-            M_SetCvar(i_brightness, i_brightness + 1);
+            M_SetCvar(i_brightness, i_brightness + BRIGHTNESSINC);
         }
         else {
             i_brightness = (int)MAXBRIGHTNESS;
@@ -1723,6 +1766,36 @@ void M_ChangeBrightness(int choice) {
     }
 
     R_RefreshBrightness();
+}
+
+//
+// M_ChangeEnvBrightness
+//
+// KEX's second brightness slider. Where M_ChangeBrightness scales the sector
+// lights -- the original's own setting, and its own range -- this one multiplies
+// the finished world image, so it lifts the fog with everything else. Nothing to
+// refresh: the renderer reads the cvar each frame.
+//
+
+void M_ChangeEnvBrightness(int choice) {
+    switch(choice) {
+    case 0:
+        if(r_brightness > ENVBRIGHTINC) {
+            M_SetCvar(r_brightness, r_brightness - ENVBRIGHTINC);
+        }
+        else {
+            M_SetCvar(r_brightness, 0.0f);
+        }
+        break;
+    case 1:
+        if(r_brightness < ENVBRIGHTMAX - ENVBRIGHTINC) {
+            M_SetCvar(r_brightness, r_brightness + ENVBRIGHTINC);
+        }
+        else {
+            M_SetCvar(r_brightness, ENVBRIGHTMAX);
+        }
+        break;
+    }
 }
 
 void M_ChangeMessages(int choice) {
@@ -4127,6 +4200,7 @@ void M_DrawXInputButton(int x, int y, int button) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     dglEnable(GL_BLEND);
     dglSetVertex(vtx);
@@ -4622,6 +4696,7 @@ static void M_DrawMenuSkull(int x, int y) {
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+    GL_SetTextureFilterHud();
 
     dglEnable(GL_BLEND);
     dglSetVertex(vtx);
@@ -4678,6 +4753,7 @@ static void M_DrawCursor(int x, int y) {
 
         dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
         dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
+        GL_SetTextureFilterHud();
 
         GL_SetOrthoScale(scale);
         GL_SetState(GLSTATE_BLEND, 1);
@@ -5043,6 +5119,18 @@ void M_MenuFadeOut(void) {
 extern cvar::BoolVar p_features;
 
 void M_Ticker(void) {
+    //
+    // Ask for the scene behind the menu to be pushed back, and hand over the
+    // menu's own opacity so the blur arrives with it rather than snapping on in
+    // front of a panel that is still fading in. menualphacolor is advanced by
+    // menufadefunc a few lines below, so the two stay on the same cadence.
+    //
+    // Stated here rather than read from menuactive by the renderer: the menu is
+    // the only thing that knows whether it is showing, and every tic passes
+    // through here, including the ones that turn it off.
+    //
+    imp::shader::post_scene_blur(menuactive ? menualphacolor / 255.0f : 0.0f);
+
     mainmenuactive = (currentMenu == &MainDef) ? true : false;
 
     if((currentMenu == &MainDef ||

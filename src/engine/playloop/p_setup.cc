@@ -92,6 +92,12 @@ cvar::BoolVar p_usecontext;
 cvar::BoolVar p_damageindicator;
 cvar::IntVar p_regionmode;
 cvar::FloatVar p_movebob = 1;
+//
+// See P_CrossPathLines in p_map.cc. Set to 0 to get the original's behaviour
+// back, where a fast enough player passes straight through a trigger.
+//
+cvar::BoolVar p_fixlineskips = true;
+
 
 //
 // [kex] sky definition stuff
@@ -1420,7 +1426,8 @@ void P_Init(void) {
         (p_usecontext,      "p_UseContext",      "TODO")
         (p_damageindicator, "p_DamageIndicator", "TODO")
         (p_regionmode,      "p_RegionMode",      "TODO")
-        (p_movebob,         "p_MoveBob",         "Amount of view-bobbing when moving");
+        (p_movebob,         "p_MoveBob",         "Amount of view-bobbing when moving")
+        (p_fixlineskips,    "p_FixLineSkips",    "Avoid skipping linedefs when the player is moving fast. 0 is the original's behaviour, which speedruns rely on");
 
     SC_Init();
     P_InitPicAnims();

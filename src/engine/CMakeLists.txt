@@ -73,6 +73,7 @@ set(INCLUDES
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_BINARY_DIR}/config
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/opengl/glad
 
   ${SDL2_INCLUDE_DIRS}
   ${SDL2_NET_INCLUDE_DIRS}
@@ -180,6 +181,26 @@ set(SOURCES
   opengl/gl_main.cc
   opengl/gl_texture.cc
   opengl/glad/glad.c
+  opengl/shader/atlas.cc
+  opengl/shader/atlas.hh
+  opengl/shader/draw.cc
+  opengl/shader/draw.hh
+  opengl/shader/gl33.cc
+  opengl/shader/gl33.hh
+  opengl/shader/immediate.cc
+  opengl/shader/immediate.hh
+  opengl/shader/glstate.cc
+  opengl/shader/glstate.hh
+  opengl/shader/matrix.cc
+  opengl/shader/matrix.hh
+  opengl/shader/postprocess.cc
+  opengl/shader/postprocess.hh
+  opengl/shader/preprocessor.cc
+  opengl/shader/preprocessor.hh
+  opengl/shader/program.cc
+  opengl/shader/program.hh
+  opengl/shader/uniformblock.cc
+  opengl/shader/uniformblock.hh
 
   # parser
   parser/sc_main.cc

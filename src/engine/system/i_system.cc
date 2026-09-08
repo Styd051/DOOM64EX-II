@@ -51,7 +51,13 @@
 #include "SDL.h"
 
 cvar::FloatVar i_gamma = 0.0;
-cvar::FloatVar i_brightness = 100.0;
+//
+// 150 gives a light factor of 2.5, which is what KEX ships with. The scale is
+// the original's -- (value + 100) / 100 -- so 0 is still the N64's own darkest
+// and 100 its brightest; the range simply carries on past it to where the
+// remaster sits. See MAXBRIGHTNESS in m_menu.cc.
+//
+cvar::FloatVar i_brightness = 150.0;
 cvar::BoolVar i_interpolateframes = true;
 cvar::StringVar s_soundfont = ""s;
 
@@ -289,15 +295,16 @@ unsigned long I_GetRandomTimeSeed(void)
 void I_Init(void)
 {
     cvar::Register()
-        (i_gamma, "i_Gamma", "")
+        (i_gamma, "i_Gamma", "Gamma curve over the finished world image")
         (i_brightness, "i_Brightness", "Brightness")
         (i_interpolateframes, "i_InterpolateFrames", "TODO")
         (s_soundfont, "s_SoundFont", "Path to 'doomsnd.sf2'");
 
-    i_gamma.set_callback([](const float &) {
-        void GL_DumpTextures();
-        GL_DumpTextures();
-    });
+    // No callback. The gamma is a uniform on the finished world image now, read
+    // fresh every frame; it used to be baked into the palette, which meant every
+    // texture in the game had to be reloaded whenever it moved -- and meant it
+    // reached the status bar, the menus and the title screen, where turning it up
+    // far enough to suit the world washed the DOOM 64 logo out.
 
     i_brightness.set_callback([](const float &) {
         R_RefreshBrightness();

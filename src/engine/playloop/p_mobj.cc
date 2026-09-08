@@ -353,11 +353,25 @@ void P_ZMovement(mobj_t* mo, dboolean checkmissile) {
         }
     }
     else if((mo->flags & MF_GRAVITY)) {
+        //
+        // [d64] Non-players fall slower than the player, and it is not a
+        // rounding accident: the original says so in a comment of its own.
+        // DOOM64-RE p_base.c:309, where GRAVITY is FRACUNIT*4 --
+        //
+        //     if (mo->momz == 0) mo->momz = -(GRAVITY/2);
+        //     else               mo->momz -= ((GRAVITY/FRACBITS)*3);
+        //
+        // Our GRAVITY is FRACUNIT, which is their GRAVITY/4, so their first
+        // push is two of ours and their acceleration is three quarters of one.
+        // Kaiser's article of 24 March 2020 puts it in words: "Non-player
+        // objects have slower gravity (they fall down %25 slower than the
+        // player)" -- and 0.75 over 1 is exactly that 25%.
+        //
         if(mo->momz == 0) {
-            mo->momz = -GRAVITY;
+            mo->momz = -(GRAVITY*2);
         }
         else {
-            mo->momz -= GRAVITY;
+            mo->momz -= (GRAVITY*3)/4;
         }
     }
 

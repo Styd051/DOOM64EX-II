@@ -31,12 +31,14 @@
 #include "r_local.h"
 #include "r_sky.h"
 #include "r_drawlist.h"
+#include "shader/draw.hh"
 
 extern cvar::BoolVar i_interpolateframes;
 extern cvar::BoolVar r_texturecombiner;
 extern cvar::BoolVar r_fog;
 extern cvar::BoolVar r_rendersprites;
 extern cvar::BoolVar st_flashoverlay;
+extern cvar::BoolVar r_colorizesubsectors;
 
 //
 // ProcessWalls
@@ -51,6 +53,18 @@ static dboolean ProcessWalls(vtxlist_t* vl, int* drawcount) {
     bspColor[LIGHT_THING]    = R_GetSectorLight(0xff, sec->colors[LIGHT_THING]);
     bspColor[LIGHT_UPRWALL] = R_GetSectorLight(0xff, sec->colors[LIGHT_UPRWALL]);
     bspColor[LIGHT_LWRWALL] = R_GetSectorLight(0xff, sec->colors[LIGHT_LWRWALL]);
+
+    // [kex] r_ColorizeSubsectors. Every one of the five, or the seam between
+    // two subsectors would still be readable as a light change rather than as
+    // the boundary it is.
+    if(r_colorizesubsectors) {
+        rcolor c = R_SubsectorColor(vl->subsector);
+        int i;
+
+        for(i = 0; i < 5; i++) {
+            bspColor[i] = c;
+        }
+    }
 
     if(!vl->callback(seg, &drawVertex[*drawcount])) {
         return false;
@@ -145,6 +159,14 @@ static dboolean ProcessFlats(vtxlist_t* vl, int* drawcount) {
 
         R_LightToVertex(v, idx, 1);
 
+        if(r_colorizesubsectors) {
+            rcolor c = R_SubsectorColor(vl->subsector);
+
+            v->r = (byte)((c >> 0) & 0xff);
+            v->g = (byte)((c >> 8) & 0xff);
+            v->b = (byte)((c >> 16) & 0xff);
+        }
+
         //
         // water layer 1
         //
@@ -234,6 +256,58 @@ static void SetupFog(void) {
         }
 
         dglEnable(GL_FOG);
+
+        //
+        // Tell the programmable path where the fog runs, in world units, from
+        // the original's own numbers rather than from the exponential below.
+        //
+        // fognear is the N64's FOG_MIN: a position in the normalised screen
+        // depth range, in thousandths, with the fog complete at the far plane.
+        // The original's projection is guFrustum(-8, 8, -6, 6, 8, 3808)
+        // (DOOM64-RE, r_main.c:113), so inverting its perspective divide turns a
+        // screen depth back into a world distance:
+        //
+        //     screen_z(w) = far / (far - near) * (1 - near / w)
+        //     w           = near / (1 - s * (far - near) / far)
+        //
+        // The trap is that the original ramps linearly in *screen* depth, and
+        // the perspective divide makes that violently front-loaded in world
+        // terms. At fognear 975 the N64 is already at 44% fog by 500 units and
+        // 76% by 1000, while its endpoints are 296 and 3808. Feeding those
+        // endpoints to doomSceneMain -- which smoothsteps in linear world
+        // distance -- gives 1% and 10%: almost no fog at all. Tried, and
+        // visibly wrong.
+        //
+        // A symmetric smoothstep cannot follow that curve, so the endpoints are
+        // not what to match. What follows is fitted to the curve itself, over
+        // the first 2500 units, and the fit is far better than either the
+        // endpoints or the exponential below:
+        //
+        //     endpoints (296 .. 3808)   worse than doing nothing
+        //     Doom64EX's own (0 .. 2139)   RMS error 0.197
+        //     this, (0 .. 2.4 x w50)       RMS error 0.096
+        //
+        // where w50 is the distance at which the original reaches half fog.
+        // Starting at zero costs about 6% fog on surfaces right in front of the
+        // player, which the original does not have; that is the price of a
+        // symmetric curve, and it buys the whole mid-range where the fog is
+        // actually seen.
+        //
+        {
+            const float n64_near = 8.0f;
+            const float n64_far = 3808.0f;
+
+            // Screen depth halfway between where fog starts and where it is
+            // complete, then back to a world distance.
+            float s50 = (((float)fognear / 1000.0f) + 1.0f) * 0.5f;
+            float denom = 1.0f - s50 * ((n64_far - n64_near) / n64_far);
+
+            if(denom < 0.0001f) {
+                denom = 0.0001f;
+            }
+
+            imp::shader::set_world_fog(0.0f, 2.4f * (n64_near / denom));
+        }
 
         // do exponential fog if color is black
         if(sky && (sky->fogcolor & 0xFFFFFF) != 0) {

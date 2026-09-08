@@ -5,6 +5,7 @@
 #include "doom_main/d_main.h"
 #include "common/doomstat.h"
 #include "renderer/r_main.h"
+#include "misc/m_misc.h"
 
 #include "sdl2_private.hh"
 
@@ -52,7 +53,7 @@ namespace {
   class SdlVideo : public IVideo {
       SDL_Window* m_window {};
       SDL_GLContext m_glcontext {};
-      OpenGLVer m_opengl;
+
       bool m_has_focus { false };
       bool m_has_mouse { false };
       Vector<VideoMode> m_modes {};
@@ -62,11 +63,19 @@ namespace {
       void m_init_modes();
       int m_mouse_accel(int val);
 
+      /*!
+       * Set the engine's idea of the screen from the GL drawable.
+       *
+       * The window's size and its drawable's size differ on a scaled display,
+       * and it is the drawable the renderer actually draws into.
+       */
+      void m_query_drawable();
+
       void m_init_mode(const VideoMode&);
       void m_change_mode(const VideoMode&);
 
   public:
-      SdlVideo(OpenGLVer ver);
+      SdlVideo();
       ~SdlVideo();
 
       void set_mode(const VideoMode& mode) override;
@@ -115,19 +124,33 @@ cvar::FloatVar i_rstickthreshold = 20.0;
 //
 // SdlVideo::m_init_gl
 //
-void SdlVideo::m_init_gl() {
-    switch (m_opengl) {
-    case OpenGLVer::gl14:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 4);
-        break;
+void SdlVideo::m_query_drawable() {
+    int w = 0;
+    int h = 0;
 
-    case OpenGLVer::gl33:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        break;
+    SDL_GL_GetDrawableSize(m_window, &w, &h);
+
+    // A driver with nothing to say leaves these at zero rather than failing,
+    // and a zero here would divide the aspect ratio and size every target in
+    // the renderer. Keep whatever was there in that case.
+    if (w > 0 && h > 0) {
+        video_width = w;
+        video_height = h;
     }
+
+    video_ratio = static_cast<float>(video_width) / video_height;
+    ViewWidth = video_width;
+    ViewHeight = video_height;
+}
+
+void SdlVideo::m_init_gl() {
+    // 3.3 core, and only that. There is no fallback left to ask for: the fixed
+    // pipeline is gone from the binary and glad no longer declares a single
+    // function the core profile removed, so a 1.4 context would run the same
+    // renderer under an older name.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 0);
@@ -182,9 +205,27 @@ int SdlVideo::m_mouse_accel(int val) {
 //
 // SdlVideo::SdlVideo
 //
-SdlVideo::SdlVideo(OpenGLVer opengl):
-    m_opengl(opengl)
+SdlVideo::SdlVideo()
 {
+    // Ask Windows to stop scaling us, before SDL brings up video.
+    //
+    // A process that says nothing is DPI unaware, and Windows then hands it a
+    // virtualised desktop: on a display at 125% the engine is told the screen is
+    // 1536x864 and the result is stretched back up to the panel's real 1920x1080
+    // by the compositor. Everything is drawn at 80% of the pixels it could have
+    // been and then blurred to fit.
+    //
+    // "permonitorv2" is the level SDL recommends, and the one that keeps the
+    // title bar right when a window is dragged between monitors of different
+    // scale. It does not switch SDL to a virtual coordinate system -- one SDL
+    // coordinate stays one pixel -- which is what the renderer needs, since it
+    // sizes every framebuffer from these numbers. SDL falls back to the best
+    // level the running Windows offers, and other platforms ignore the hint.
+    //
+    // This has to happen before SDL_INIT_VIDEO: awareness is a process-wide
+    // property fixed once, and SDL applies it when it starts the video driver.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+
     SDL_Init(SDL_INIT_EVERYTHING);
     SDL_ShowCursor(SDL_FALSE);
     m_init_modes();
@@ -264,7 +305,8 @@ void SdlVideo::set_mode(const VideoMode& mode)
             break;
         }
 
-        auto title = fmt::format("{} {} - SDL2, OpenGL 1.4", config::name, config::version_full);
+        auto title = fmt::format("{} {} - SDL2, OpenGL 3.3 core",
+                                 config::name, config::version_full);
         m_window = SDL_CreateWindow(title.c_str(),
                                     SDL_WINDOWPOS_CENTERED,
                                     SDL_WINDOWPOS_CENTERED,
@@ -282,11 +324,19 @@ void SdlVideo::set_mode(const VideoMode& mode)
             throw std::runtime_error{fmt::format("Couldn't create OpenGL Context: {}", SDL_GetError())};
         }
 
-        video_width = copy.width;
-        video_height = copy.height;
-        video_ratio = static_cast<float>(video_width) / video_height;
-        ViewWidth = video_width;
-        ViewHeight = video_height;
+        // From the drawable, not from what was asked for.
+        //
+        // SDL_WINDOW_ALLOW_HIGHDPI above says the engine works in real pixels,
+        // so on a display with Windows scaling the window's size and its GL
+        // drawable's size are two different numbers: ask for 1920x1080 at 125%
+        // and the drawable comes back 1536x864. Taking the requested size then
+        // makes GL_Init set a viewport larger than the buffer it draws into, and
+        // the game starts up showing a zoomed crop of itself.
+        //
+        // It corrected itself on the first trip through the video menu, because
+        // that path below takes its size from SDL_GetClosestDisplayMode, which
+        // is already in real pixels.
+        m_query_drawable();
     } else {
         SDL_DisplayMode target {}, closest {};
         auto display_id = SDL_GetWindowDisplayIndex(m_window);
@@ -326,9 +376,7 @@ void SdlVideo::set_mode(const VideoMode& mode)
             break;
         }
 
-        video_ratio = static_cast<float>(video_width) / video_height;
-        ViewWidth = video_width;
-        ViewHeight = video_height;
+        m_query_drawable();
         glViewport(0, 0, video_width, video_height);
         GL_CalcViewSize();
         R_SetViewMatrix();
@@ -630,7 +678,14 @@ void imp_init_sdl2()
         (i_rsticksensitivity, "i_RStickSensitivity", "")
         (i_rstickthreshold, "i_RStickThreshold", "");
 
-    Video = new SdlVideo { OpenGLVer::gl14 };
+    // OpenGL 3.3 core, with nothing to choose from any more.
+    //
+    // -gl14 lived here through the whole transition, so a suspect frame could be
+    // put next to the fixed pipeline it replaced. It has nothing left to compare:
+    // once D64_FF stopped emitting, the two profiles rendered the same image to
+    // within the noise floor, and glad no longer declares a function either of
+    // them could disagree about.
+    Video = new SdlVideo {};
 
     v_vsync.set_callback([](const bool& value){
         Video->set_vsync(value);

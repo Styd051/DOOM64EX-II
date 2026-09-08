@@ -32,6 +32,7 @@
 #include "z_zone.h"
 #include "r_things.h"
 #include "gl_texture.h"
+#include "shader/draw.hh"
 #include "gl_main.h"
 #include "r_drawlist.h"
 #include "p_local.h"
@@ -678,6 +679,9 @@ void R_DrawPSprite(pspdef_t *psp, sector_t* sector, player_t *player) {
     GL_Set2DQuad(v, x, y, width, height, u1, u2, v1, v2, color);
     GL_SetTextureUnit(0, true);
     GL_CheckFillMode();
+
+    // Same light the texture units below apply, for the programmable path.
+    shader::set_sector_light(sector->lightlevel);
 
     //
     // setup texture environment for effects

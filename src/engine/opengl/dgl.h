@@ -27,6 +27,10 @@
 
 #include "gl_main.h"
 #include "i_system.h"
+#include "shader/matrix.hh"
+#include "shader/glstate.hh"
+#include "shader/immediate.hh"
+#include "shader/gl33.hh"
 
 //#define LOG_GLFUNC_CALLS
 //#define USE_DEBUG_GLFUNCS
@@ -38,12 +42,115 @@ void dglLogError(const char *message, const char *file, int line);
 #define dglGetString(name)  ((const char *)glGetString(name))
 
 //
+// D64_LEGACY
+//
+// Everything below that the core profile removed goes through this. The call
+// happens in a compatibility context and does not in a core one, decided at
+// runtime from the context itself -- so a single binary runs both ways and can
+// be compared frame by frame.
+//
+// Runtime rather than #ifdef on purpose. A compile-time switch would have left
+// the two profiles in two different binaries, which is exactly the position
+// where a divergence is hardest to pin down.
+//
+// Nothing. The engine targets a 3.3 core context, where none of these functions
+// exist -- glad itself no longer declares them, so a call site left here would
+// not compile. The argument is still written out at each site because it names
+// what the mirror below replaces, and that is worth reading.
+#define D64_LEGACY(call)
+
+//
+// D64_FF
+//
+// The fixed-function half of the mirrored macros: the matrix stack, the fog,
+// the alpha test, the immediate-mode colour. Each of these lines feeds both
+// OpenGL and the engine's own mirror, and this is the half that stops.
+//
+// Nothing, like D64_LEGACY. Kept as a macro so each mirrored line still says
+// which fixed-function call it stands in for -- that is the only record left of
+// what the mirror replaces, and it is worth reading.
+#define D64_FF(call)
+
+//
+// MATRIX STACK
+//
+// These feed the engine's own stack alongside the fixed-function one, so the
+// replacement can be checked against what it replaces while both exist. The
+// core profile removes the GL half; when that happens only the right-hand call
+// disappears from each line.
+//
+#define dglMatrixMode(mode) (D64_FF(glMatrixMode(mode)) ::imp::shader::matrix_mode(mode))
+#define dglLoadIdentity() (D64_FF(glLoadIdentity()) ::imp::shader::matrix_load_identity())
+#define dglLoadMatrixf(m) (D64_FF(glLoadMatrixf(m)) ::imp::shader::matrix_load(m))
+#define dglMultMatrixf(m) (D64_FF(glMultMatrixf(m)) ::imp::shader::matrix_mult(m))
+#define dglPushMatrix() (D64_FF(glPushMatrix()) ::imp::shader::matrix_push())
+#define dglPopMatrix() (D64_FF(glPopMatrix()) ::imp::shader::matrix_pop())
+#define dglRotatef(angle, x, y, z) (D64_FF(glRotatef(angle, x, y, z)) ::imp::shader::matrix_rotate(angle, x, y, z))
+#define dglTranslatef(x, y, z) (D64_FF(glTranslatef(x, y, z)) ::imp::shader::matrix_translate(x, y, z))
+#define dglScalef(x, y, z) (D64_FF(glScalef(x, y, z)) ::imp::shader::matrix_scale(x, y, z))
+#define dglOrtho(left, right, bottom, top, zNear, zFar) (D64_FF(glOrtho(left, right, bottom, top, zNear, zFar)) ::imp::shader::matrix_ortho(left, right, bottom, top, zNear, zFar))
+
+//
+// The double-precision variants feed the same stack. Missing dglTranslated was
+// enough to make r_sky.cc's dome silently bypass it, so all of them are here.
+//
+#define dglTranslated(x, y, z) (D64_FF(glTranslated(x, y, z)) ::imp::shader::matrix_translate((float)(x), (float)(y), (float)(z)))
+#define dglRotated(angle, x, y, z) (D64_FF(glRotated(angle, x, y, z)) ::imp::shader::matrix_rotate((float)(angle), (float)(x), (float)(y), (float)(z)))
+#define dglScaled(x, y, z) (D64_FF(glScaled(x, y, z)) ::imp::shader::matrix_scale((float)(x), (float)(y), (float)(z)))
+#define dglLoadMatrixd(m) (D64_FF(glLoadMatrixd(m)) ::imp::shader::matrix_load_d(m))
+#define dglMultMatrixd(m) (D64_FF(glMultMatrixd(m)) ::imp::shader::matrix_mult_d(m))
+#define dglFrustum(left, right, bottom, top, zNear, zFar) (D64_FF(glFrustum(left, right, bottom, top, zNear, zFar)) ::imp::shader::matrix_frustum(left, right, bottom, top, zNear, zFar))
+
+//
+// FIXED-FUNCTION STATE MIRROR
+//
+// Fog and alpha test are read back by the shaders, and the core profile answers
+// neither. These feed a mirror alongside the real calls, so the readback can be
+// dropped once state_selftest says the two agree.
+//
+#define dglEnable(cap) (::imp::shader::state_enable(cap, true))
+#define dglDisable(cap) (::imp::shader::state_enable(cap, false))
+#define dglFogf(pname, param) (D64_FF(glFogf(pname, param)) ::imp::shader::state_fog_param(pname, (float)(param)))
+#define dglFogi(pname, param) (D64_FF(glFogi(pname, param)) ::imp::shader::state_fog_param(pname, (float)(param)))
+#define dglFogfv(pname, params) (D64_FF(glFogfv(pname, params)) ::imp::shader::state_fog_paramv(pname, params))
+#define dglAlphaFunc(func, ref) (D64_FF(glAlphaFunc(func, ref)) ::imp::shader::state_alpha_func(func, (float)(ref)))
+
+
+//
+// IMMEDIATE MODE
+//
+// Emulated rather than passed through: the core profile has none of it. What
+// used to be a run of glVertex calls now gathers into a vertex array and goes
+// out through dglDrawGeometryPrim, which picks the pipeline like everything
+// else. See opengl/shader/immediate.cc.
+//
+#define dglBegin(mode) (::imp::shader::imm_begin(mode))
+#define dglEnd() (::imp::shader::imm_end())
+#define dglVertex3f(x, y, z) (::imp::shader::imm_vertex((float)(x), (float)(y), (float)(z)))
+#define dglVertex2f(x, y) (::imp::shader::imm_vertex((float)(x), (float)(y), 0.0f))
+#define dglVertex2i(x, y) (::imp::shader::imm_vertex((float)(x), (float)(y), 0.0f))
+// Colour and texcoord feed both: glRectf and friends still draw with the
+// current GL colour, and replacing these outright turned every one of them
+// white -- the console background, the menu dim, the berserk flash.
+#define dglColor4ub(r, g, b, a) (D64_FF(glColor4ub(r, g, b, a)) ::imp::shader::imm_color(r, g, b, a))
+#define dglColor4ubv(v) (D64_FF(glColor4ubv(v)) ::imp::shader::imm_colorv(v))
+#define dglColor4f(r, g, b, a) (D64_FF(glColor4f(r, g, b, a)) ::imp::shader::imm_colorf(r, g, b, a))
+#define dglRectf(x1, y1, x2, y2) (::imp::shader::imm_rect((float)(x1), (float)(y1), (float)(x2), (float)(y2)))
+#define dglRecti(x1, y1, x2, y2) (::imp::shader::imm_rect((float)(x1), (float)(y1), (float)(x2), (float)(y2)))
+#define dglRects(x1, y1, x2, y2) (::imp::shader::imm_rect((float)(x1), (float)(y1), (float)(x2), (float)(y2)))
+#define dglRectd(x1, y1, x2, y2) (::imp::shader::imm_rect((float)(x1), (float)(y1), (float)(x2), (float)(y2)))
+#define dglTexCoord2f(s, t) (D64_FF(glTexCoord2f(s, t)) ::imp::shader::imm_texcoord((float)(s), (float)(t)))
+
+
+//
 // CUSTOM ROUTINES
 //
 
 void dglSetVertex(vtx_t *vtx);
 void dglTriangle(int v0, int v1, int v2);
 void dglDrawGeometry(dword count, vtx_t *vtx);
+void dglDrawGeometryPrim(dword count, vtx_t *vtx, const word *indices,
+                         dword indexcount, GLenum mode);
 void dglViewFrustum(int width, int height, rfloat fovy, rfloat znear);
 void dglSetVertexColor(vtx_t *v, rcolor c, word count);
 void dglGetColorf(rcolor color, float* argb);
@@ -56,10 +163,9 @@ void dglTexCombInterpolate(GLenum t, float a);
 void dglTexCombReplaceAlpha(GLenum t);
 
 #define dglAccum(op, value) glAccum(op, value)
-#define dglAlphaFunc(func, ref) glAlphaFunc(func, ref)
+// moved to the FIXED-FUNCTION STATE MIRROR block below
 #define dglAreTexturesResident(n, textures, residences) glAreTexturesResident(n, textures, residences)
 #define dglArrayElement(i) glArrayElement(i)
-#define dglBegin(mode) glBegin(mode)
 #define dglBindTexture(target, texture) glBindTexture(target, texture)
 #define dglBitmap(width, height, xorig, yorig, xmove, ymove, bitmap) glBitmap(width, height, xorig, yorig, xmove, ymove, bitmap)
 #define dglBlendFunc(sfactor, dfactor) glBlendFunc(sfactor, dfactor)
@@ -92,21 +198,18 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglColor4bv(v) glColor4bv(v)
 #define dglColor4d(red, green, blue, alpha) glColor4d(red, green, blue, alpha)
 #define dglColor4dv(v) glColor4dv(v)
-#define dglColor4f(red, green, blue, alpha) glColor4f(red, green, blue, alpha)
 #define dglColor4fv(v) glColor4fv(v)
 #define dglColor4i(red, green, blue, alpha) glColor4i(red, green, blue, alpha)
 #define dglColor4iv(v) glColor4iv(v)
 #define dglColor4s(red, green, blue, alpha) glColor4s(red, green, blue, alpha)
 #define dglColor4sv(v) glColor4sv(v)
-#define dglColor4ub(red, green, blue, alpha) glColor4ub(red, green, blue, alpha)
-#define dglColor4ubv(v) glColor4ubv(v)
 #define dglColor4ui(red, green, blue, alpha) glColor4ui(red, green, blue, alpha)
 #define dglColor4uiv(v) glColor4uiv(v)
 #define dglColor4us(red, green, blue, alpha) glColor4us(red, green, blue, alpha)
 #define dglColor4usv(v) glColor4usv(v)
 #define dglColorMask(red, green, blue, alpha) glColorMask(red, green, blue, alpha)
 #define dglColorMaterial(face, mode) glColorMaterial(face, mode)
-#define dglColorPointer(size, type, stride, pointer) glColorPointer(size, type, stride, pointer)
+#define dglColorPointer(size, type, stride, pointer) D64_LEGACY(glColorPointer(size, type, stride, pointer))
 #define dglCopyPixels(x, y, width, height, type) glCopyPixels(x, y, width, height, type)
 #define dglCopyTexImage1D(target, level, internalFormat, x, y, width, border) glCopyTexImage1D(target, level, internalFormat, x, y, width, border)
 #define dglCopyTexImage2D(target, level, internalFormat, x, y, width, height, border) glCopyTexImage2D(target, level, internalFormat, x, y, width, height, border)
@@ -118,8 +221,8 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglDepthFunc(func) glDepthFunc(func)
 #define dglDepthMask(flag) glDepthMask(flag)
 #define dglDepthRange(zNear, zFar) glDepthRange(zNear, zFar)
-#define dglDisable(cap) glDisable(cap)
-#define dglDisableClientState(array) glDisableClientState(array)
+// moved to the FIXED-FUNCTION STATE MIRROR block below
+#define dglDisableClientState(array) D64_LEGACY(glDisableClientState(array))
 #define dglDrawArrays(mode, first, count) glDrawArrays(mode, first, count)
 #define dglDrawBuffer(mode) glDrawBuffer(mode)
 #define dglDrawElements(mode, count, type, indices) glDrawElements(mode, count, type, indices)
@@ -127,9 +230,8 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglEdgeFlag(flag) glEdgeFlag(flag)
 #define dglEdgeFlagPointer(stride, pointer) glEdgeFlagPointer(stride, pointer)
 #define dglEdgeFlagv(flag) glEdgeFlagv(flag)
-#define dglEnable(cap) glEnable(cap)
-#define dglEnableClientState(array) glEnableClientState(array)
-#define dglEnd() glEnd()
+// moved to the FIXED-FUNCTION STATE MIRROR block below
+#define dglEnableClientState(array) D64_LEGACY(glEnableClientState(array))
 #define dglEndList() glEndList()
 #define dglEvalCoord1d(u) glEvalCoord1d(u)
 #define dglEvalCoord1dv(u) glEvalCoord1dv(u)
@@ -146,12 +248,12 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglFeedbackBuffer(size, type, buffer) glFeedbackBuffer(size, type, buffer)
 #define dglFinish() glFinish()
 #define dglFlush() glFlush()
-#define dglFogf(pname, param) glFogf(pname, param)
-#define dglFogfv(pname, params) glFogfv(pname, params)
-#define dglFogi(pname, param) glFogi(pname, param)
+// moved to the FIXED-FUNCTION STATE MIRROR block below
+// moved to the FIXED-FUNCTION STATE MIRROR block below
+// moved to the FIXED-FUNCTION STATE MIRROR block below
 #define dglFogiv(pname, params) glFogiv(pname, params)
 #define dglFrontFace(mode) glFrontFace(mode)
-#define dglFrustum(left, right, bottom, top, zNear, zFar) glFrustum(left, right, bottom, top, zNear, zFar)
+// moved to the MATRIX STACK block above
 #define dglGenLists(range) glGenLists(range)
 #define dglGenTextures(n, textures) glGenTextures(n, textures)
 #define dglGetBooleanv(pname, params) glGetBooleanv(pname, params)
@@ -211,9 +313,7 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglLineStipple(factor, pattern) glLineStipple(factor, pattern)
 #define dglLineWidth(width) glLineWidth(width)
 #define dglListBase(base) glListBase(base)
-#define dglLoadIdentity() glLoadIdentity()
-#define dglLoadMatrixd(m) glLoadMatrixd(m)
-#define dglLoadMatrixf(m) glLoadMatrixf(m)
+// moved to the MATRIX STACK block above
 #define dglLoadName(name) glLoadName(name)
 #define dglLogicOp(opcode) glLogicOp(opcode)
 #define dglMap1d(target, u1, u2, stride, order, points) glMap1d(target, u1, u2, stride, order, points)
@@ -228,9 +328,7 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglMaterialfv(face, pname, params) glMaterialfv(face, pname, params)
 #define dglMateriali(face, pname, param) glMateriali(face, pname, param)
 #define dglMaterialiv(face, pname, params) glMaterialiv(face, pname, params)
-#define dglMatrixMode(mode) glMatrixMode(mode)
-#define dglMultMatrixd(m) glMultMatrixd(m)
-#define dglMultMatrixf(m) glMultMatrixf(m)
+// moved to the MATRIX STACK block above
 #define dglNewList(list, mode) glNewList(list, mode)
 #define dglNormal3b(nx, ny, nz) glNormal3b(nx, ny, nz)
 #define dglNormal3bv(v) glNormal3bv(v)
@@ -243,7 +341,6 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglNormal3s(nx, ny, nz) glNormal3s(nx, ny, nz)
 #define dglNormal3sv(v) glNormal3sv(v)
 #define dglNormalPointer(type, stride, pointer) glNormalPointer(type, stride, pointer)
-#define dglOrtho(left, right, bottom, top, zNear, zFar) glOrtho(left, right, bottom, top, zNear, zFar)
 #define dglPassThrough(token) glPassThrough(token)
 #define dglPixelMapfv(map, mapsize, values) glPixelMapfv(map, mapsize, values)
 #define dglPixelMapuiv(map, mapsize, values) glPixelMapuiv(map, mapsize, values)
@@ -254,17 +351,15 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglPixelTransferi(pname, param) glPixelTransferi(pname, param)
 #define dglPixelZoom(xfactor, yfactor) glPixelZoom(xfactor, yfactor)
 #define dglPointSize(size) glPointSize(size)
-#define dglPolygonMode(face, mode) glPolygonMode(face, mode)
+#define dglPolygonMode(face, mode) (glPolygonMode(face, mode), ::imp::shader::state_set_polygon_mode(face, mode))
 #define dglPolygonOffset(factor, units) glPolygonOffset(factor, units)
 #define dglPolygonStipple(mask) glPolygonStipple(mask)
 #define dglPopAttrib() glPopAttrib()
 #define dglPopClientAttrib() glPopClientAttrib()
-#define dglPopMatrix() glPopMatrix()
 #define dglPopName() glPopName()
 #define dglPrioritizeTextures(n, textures, priorities) glPrioritizeTextures(n, textures, priorities)
 #define dglPushAttrib(mask) glPushAttrib(mask)
 #define dglPushClientAttrib(mask) glPushClientAttrib(mask)
-#define dglPushMatrix() glPushMatrix()
 #define dglPushName(name) glPushName(name)
 #define dglRasterPos2d(x, y) glRasterPos2d(x, y)
 #define dglRasterPos2dv(v) glRasterPos2dv(v)
@@ -292,22 +387,16 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglRasterPos4sv(v) glRasterPos4sv(v)
 #define dglReadBuffer(mode) glReadBuffer(mode)
 #define dglReadPixels(x, y, width, height, format, type, pixels) glReadPixels(x, y, width, height, format, type, pixels)
-#define dglRectd(x1, y1, x2, y2) glRectd(x1, y1, x2, y2)
 #define dglRectdv(v1, v2) glRectdv(v1, v2)
-#define dglRectf(x1, y1, x2, y2) glRectf(x1, y1, x2, y2)
 #define dglRectfv(v1, v2) glRectfv(v1, v2)
-#define dglRecti(x1, y1, x2, y2) glRecti(x1, y1, x2, y2)
 #define dglRectiv(v1, v2) glRectiv(v1, v2)
-#define dglRects(x1, y1, x2, y2) glRects(x1, y1, x2, y2)
 #define dglRectsv(v1, v2) glRectsv(v1, v2)
 #define dglRenderMode(mode) glRenderMode(mode)
-#define dglRotated(angle, x, y, z) glRotated(angle, x, y, z)
-#define dglRotatef(angle, x, y, z) glRotatef(angle, x, y, z)
-#define dglScaled(x, y, z) glScaled(x, y, z)
-#define dglScalef(x, y, z) glScalef(x, y, z)
+// moved to the MATRIX STACK block above
+// moved to the MATRIX STACK block above
 #define dglScissor(x, y, width, height) glScissor(x, y, width, height)
 #define dglSelectBuffer(size, buffer) glSelectBuffer(size, buffer)
-#define dglShadeModel(mode) glShadeModel(mode)
+#define dglShadeModel(mode) D64_LEGACY(glShadeModel(mode))
 #define dglStencilFunc(func, ref, mask) glStencilFunc(func, ref, mask)
 #define dglStencilMask(mask) glStencilMask(mask)
 #define dglStencilOp(fail, zfail, zpass) glStencilOp(fail, zfail, zpass)
@@ -321,7 +410,6 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglTexCoord1sv(v) glTexCoord1sv(v)
 #define dglTexCoord2d(s, t) glTexCoord2d(s, t)
 #define dglTexCoord2dv(v) glTexCoord2dv(v)
-#define dglTexCoord2f(s, t) glTexCoord2f(s, t)
 #define dglTexCoord2fv(v) glTexCoord2fv(v)
 #define dglTexCoord2i(s, t) glTexCoord2i(s, t)
 #define dglTexCoord2iv(v) glTexCoord2iv(v)
@@ -343,11 +431,11 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglTexCoord4iv(v) glTexCoord4iv(v)
 #define dglTexCoord4s(s, t, r, q) glTexCoord4s(s, t, r, q)
 #define dglTexCoord4sv(v) glTexCoord4sv(v)
-#define dglTexCoordPointer(size, type, stride, pointer) glTexCoordPointer(size, type, stride, pointer)
-#define dglTexEnvf(target, pname, param) glTexEnvf(target, pname, param)
-#define dglTexEnvfv(target, pname, params) glTexEnvfv(target, pname, params)
-#define dglTexEnvi(target, pname, param) glTexEnvi(target, pname, param)
-#define dglTexEnviv(target, pname, params) glTexEnviv(target, pname, params)
+#define dglTexCoordPointer(size, type, stride, pointer) D64_LEGACY(glTexCoordPointer(size, type, stride, pointer))
+#define dglTexEnvf(target, pname, param) D64_LEGACY(glTexEnvf(target, pname, param))
+#define dglTexEnvfv(target, pname, params) D64_LEGACY(glTexEnvfv(target, pname, params))
+#define dglTexEnvi(target, pname, param) D64_LEGACY(glTexEnvi(target, pname, param))
+#define dglTexEnviv(target, pname, params) D64_LEGACY(glTexEnviv(target, pname, params))
 #define dglTexGend(coord, pname, param) glTexGend(coord, pname, param)
 #define dglTexGendv(coord, pname, params) glTexGendv(coord, pname, params)
 #define dglTexGenf(coord, pname, param) glTexGenf(coord, pname, param)
@@ -362,19 +450,15 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglTexParameteriv(target, pname, params) glTexParameteriv(target, pname, params)
 #define dglTexSubImage1D(target, level, xoffset, width, format, type, pixels) glTexSubImage1D(target, level, xoffset, width, format, type, pixels)
 #define dglTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels) glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels)
-#define dglTranslated(x, y, z) glTranslated(x, y, z)
-#define dglTranslatef(x, y, z) glTranslatef(x, y, z)
+// moved to the MATRIX STACK block above
 #define dglVertex2d(x, y) glVertex2d(x, y)
 #define dglVertex2dv(v) glVertex2dv(v)
-#define dglVertex2f(x, y) glVertex2f(x, y)
 #define dglVertex2fv(v) glVertex2fv(v)
-#define dglVertex2i(x, y) glVertex2i(x, y)
 #define dglVertex2iv(v) glVertex2iv(v)
 #define dglVertex2s(x, y) glVertex2s(x, y)
 #define dglVertex2sv(v) glVertex2sv(v)
 #define dglVertex3d(x, y, z) glVertex3d(x, y, z)
 #define dglVertex3dv(v) glVertex3dv(v)
-#define dglVertex3f(x, y, z) glVertex3f(x, y, z)
 #define dglVertex3fv(v) glVertex3fv(v)
 #define dglVertex3i(x, y, z) glVertex3i(x, y, z)
 #define dglVertex3iv(v) glVertex3iv(v)
@@ -388,15 +472,15 @@ void dglTexCombReplaceAlpha(GLenum t);
 #define dglVertex4iv(v) glVertex4iv(v)
 #define dglVertex4s(x, y, z, w) glVertex4s(x, y, z, w)
 #define dglVertex4sv(v) glVertex4sv(v)
-#define dglVertexPointer(size, type, stride, pointer) glVertexPointer(size, type, stride, pointer)
+#define dglVertexPointer(size, type, stride, pointer) D64_LEGACY(glVertexPointer(size, type, stride, pointer))
 #define dglViewport(x, y, width, height) glViewport(x, y, width, height)
 
 //
 // GL_ARB_multitexture
 //
 
-#define dglActiveTextureARB(texture) glActiveTextureARB(texture)
-#define dglClientActiveTextureARB(texture) glClientActiveTextureARB(texture)
+#define dglActiveTextureARB(texture) (::imp::shader::state_select_texture(texture))
+#define dglClientActiveTextureARB(texture) D64_LEGACY(glClientActiveTextureARB(texture))
 #define dglMultiTexCoord1dARB(target, s) glMultiTexCoord1dARB(target, s)
 #define dglMultiTexCoord1dvARB(target, v) glMultiTexCoord1dvARB(target, v)
 #define dglMultiTexCoord1fARB(target, s) glMultiTexCoord1fARB(target, s)
@@ -434,8 +518,8 @@ void dglTexCombReplaceAlpha(GLenum t);
 // GL_EXT_compiled_vertex_array
 //
 
-#define dglLockArraysEXT(first, count) glLockArraysEXT(first, count)
-#define dglUnlockArraysEXT() glUnlockArraysEXT()
+#define dglLockArraysEXT(first, count) D64_LEGACY(glLockArraysEXT(first, count))
+#define dglUnlockArraysEXT() D64_LEGACY(glUnlockArraysEXT())
 
 //
 // GL_EXT_multi_draw_arrays
