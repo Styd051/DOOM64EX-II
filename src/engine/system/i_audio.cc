@@ -1612,8 +1612,9 @@ void I_SetMusicVolume(float volume) {
 void I_SetSoundVolume(float volume) {
     doomseq.soundvolume = (volume * 0.925f);
 
-    // The recorded sounds apply the same 0.925 themselves, from the raw slider
-    // value, so that the two banks stay at one level.
+    // The recorded sounds take the slider as it comes. The 0.925 above shapes a
+    // MIDI controller value and means nothing to a recording, which is scaled
+    // directly instead.
     sfx::set_volume(volume);
 }
 

@@ -199,25 +199,27 @@ namespace {
   }
 
   //
-  // The sequencer sends a sound's volume as MIDI controller 7, and General MIDI
-  // reads that controller as an attenuation of 40*log10(cc/127) dB -- an
-  // amplitude of (cc/127) squared. A recording handed the plain linear number
-  // would sit well above everything the synthesiser plays, so it goes through
-  // the same curve. Whether it lands at exactly the level FluidSynth's own
-  // volume handling produces is a question only the ear can settle.
+  // What the game asked for and nothing else: the volume S_AdjustSoundParams
+  // worked out from distance, times the slider.
+  //
+  // This first went through the squared curve General MIDI defines for
+  // controller 7 -- the one the sequencer sends -- on the reasoning that a
+  // recording handed a plain linear number would sit above everything the
+  // synthesiser plays. Measuring the recordings settled it the other way.
+  // They are mastered with no headroom at all: a median peak of 30968 out of
+  // 32767, a third of the 92 at full scale, the quietest still above 10000.
+  // The curve was not holding them level with the music, it was holding them
+  // 5 dB under it, and the music reaches full scale too.
+  //
+  // So they are given the whole range, and the sliders are left to do what
+  // sliders are for. -sfxdump prints the peaks this rests on.
   //
   float gain_(int volume)
   {
-      //
-      // The 0.925 is the scaling I_SetSoundVolume applies before handing the
-      // sequencer its volume. The two have to agree, or the WAD's effects would
-      // sit at a different level from the cartridge's.
-      //
-      float cc = volume * (volume_ * 0.925f) / 127.0f;
+      float v = std::max(0, std::min(127, volume)) / 127.0f;
+      float slider = std::max(0.0f, std::min(100.0f, volume_)) / 100.0f;
 
-      cc = std::max(0.0f, std::min(127.0f, cc)) / 127.0f;
-
-      return cc * cc;
+      return v * slider;
   }
 
   //
@@ -385,9 +387,23 @@ void imp::sfx::init()
         found++;
         bytes += static_cast<size_t>(wave.size);
 
-        if (dump)
-            I_Printf("  %-9s -> sound %3d  %6d bytes  %d Hz\n",
-                     name.c_str(), id, (int)wave.size, (int)wave.rate);
+        if (dump) {
+            //
+            // The peak says how much headroom a recording was mastered with,
+            // which is what settles how much gain it can be given before the
+            // loud ones clip.
+            //
+            int peak = 0;
+            const auto* s = reinterpret_cast<const short*>(wave.data);
+
+            for (int i = 0; i < wave.size / 2; i++) {
+                int a = s[i] < 0 ? -s[i] : s[i];
+                if (a > peak) peak = a;
+            }
+
+            I_Printf("  %-9s -> sound %3d  %6d bytes  %d Hz  peak %5d\n",
+                     name.c_str(), id, (int)wave.size, (int)wave.rate, peak);
+        }
     }
 
     if (!found)
