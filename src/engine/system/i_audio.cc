@@ -612,10 +612,20 @@ static void Event_Meta(doomseq_t* seq, channel_t* chan) {
         dmemset(string, 0, 256);
 
         for(i = 0; i < b; i++) {
-            string[i] = Chan_GetNextMidiByte(chan);
+            //
+            // Every byte is taken from the stream whether or not it is kept,
+            // because leaving one behind desyncs the track. Only what fits is
+            // kept: the length is a byte from the file, so 255 of them would
+            // have written one past the end of this buffer.
+            //
+            byte c = Chan_GetNextMidiByte(chan);
+
+            if(i < (int)sizeof(string) - 2) {
+                string[i] = c;
+            }
         }
 
-        string[b + 1] = '\n';
+        string[i < (int)sizeof(string) - 2 ? i : (int)sizeof(string) - 2] = '\n';
         break;
 
     case MIDI_END:
@@ -644,28 +654,88 @@ static void Event_Meta(doomseq_t* seq, channel_t* chan) {
         break;
 
         // game-specific midi event
-    case MIDI_SEQUENCER:
-        b = Chan_GetNextMidiByte(chan);   // length
-        b = Chan_GetNextMidiByte(chan);   // manufacturer (should be 0)
-        if(!b) {
-            b = Chan_GetNextMidiByte(chan);
-            if(b == 0x23) {
-                // set jump position
-                chan->jump = chan->pos;
-            }
-            else if(b == 0x20) {
-                b = Chan_GetNextMidiByte(chan);
+    case MIDI_SEQUENCER: {
+        //
+        // The cartridge uses this to mark and return to a loop point, and its
+        // own events are exactly as long as what is read below. A MIDI written
+        // in a sequencer uses it for something else entirely: the remaster's
+        // MUSTITLE opens with three of them carrying the date it was saved,
+        // the name of a font, and the name of the sound card it was played
+        // through -- fifteen, forty-four and fifty-two bytes of it.
+        //
+        // Reading the manufacturer byte, finding it was not the cartridge's
+        // zero and stopping there left all the rest in the stream, to be read
+        // as delta times and status bytes. Rubbish read as controller changes
+        // reaches the synthesiser like any other, and among the controllers
+        // rubbish eventually names are the ones that silence a channel -- so
+        // this did not merely lose its own track, it cut the music that was
+        // already playing.
+        //
+        // The end is worked out from the declared length first and the event
+        // is left there whatever was made of its contents, which is what makes
+        // an unrecognised one harmless.
+        //
+        int len = Chan_GetNextMidiByte(chan);
+        byte* end = chan->pos + len;
+        dboolean jumped = false;
+
+        if(len >= 2) {
+            b = Chan_GetNextMidiByte(chan);   // manufacturer (0 on the cartridge)
+
+            if(!b) {
                 b = Chan_GetNextMidiByte(chan);
 
-                // goto jump position
-                if(chan->jump) {
+                if(b == 0x23) {
+                    // set jump position
+                    chan->jump = end;
+                }
+                else if(b == 0x20 && chan->jump) {
+                    // goto jump position
                     chan->pos = chan->jump;
+                    jumped = true;
                 }
             }
         }
+
+        if(!jumped) {
+            chan->pos = end;
+        }
         break;
+    }
 
     default:
+        //
+        // Everything else: a time signature, a key signature, a track name --
+        // what a MIDI written in a sequencer carries and the cartridge's
+        // converted sequences never did.
+        //
+        // Unknown is not the same as absent. The event still has a length and
+        // a body, and skipping them was missing entirely, so the first one in
+        // a track left every byte after it being read as a delta time. Nor is
+        // the damage confined to that track: tempo lives on the song and every
+        // one of its tracks is paced by it, so a track reading rubbish that
+        // happens to look like a tempo change re-times all of them at once.
+        //
+        // One time signature, in the first track of the remaster's MUSTITLE --
+        // a track that holds no notes at all -- silenced the whole of the menu
+        // music. The cartridge's own MUSTITLE has no such event and always
+        // played, which is why this went unseen for as long as the ROM was the
+        // only thing the engine read.
+        //
+        // The length is a variable-length quantity. The cases above read it as
+        // a single byte, which is right for every event they handle; it is
+        // read properly here, because a text event is allowed to be long.
+        //
+        b = 0;
+
+        do {
+            i = Chan_GetNextMidiByte(chan);
+            b = (b << 7) | (i & 0x7f);
+        } while(i & 0x80);
+
+        while(b-- > 0) {
+            Chan_GetNextMidiByte(chan);
+        }
         break;
     }
 }
@@ -1099,6 +1169,26 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
             invalidate(song);
             fail++;
             continue;
+        }
+    }
+
+    //
+    // -musdump: what the 24 music slots ended up holding, and -- in
+    // I_StartMusic -- what the game later asks for and how much of it started.
+    //
+    // Kept because a silent tune says nothing about which of the three places
+    // it went wrong: the lump was not found, the file was refused, or it played
+    // to a synthesiser that made no sound of it. These two lines separate the
+    // first two from the third, which is where the remaster's menu music turned
+    // out to be.
+    //
+    if(M_CheckParm("-musdump")) {
+        for(size_t s = 93; s < audio_lumps_.size(); s++) {
+            I_Printf("  song %3d %-9s ntracks %2d type %d delta %3d tracks %s\n",
+                     (int)s, audio_lumps_[s].to_string().c_str(),
+                     (int)seq->songs[s].ntracks, (int)seq->songs[s].type,
+                     (int)seq->songs[s].delta,
+                     seq->songs[s].tracks ? "yes" : "NULL");
         }
     }
 
@@ -1610,6 +1700,8 @@ void I_StartMusic(int mus_id) {
         return;
     }
 
+    int started = 0;
+
     SEMAPHORE_LOCK()
         song = &doomseq.songs[mus_id];
 
@@ -1628,9 +1720,17 @@ void I_StartMusic(int mus_id) {
         }
 
         chan->volume = doomseq.musicvolume;
+        started++;
     }
     SEMAPHORE_UNLOCK()
-        }
+
+    if(M_CheckParm("-musdump")) {
+        I_Printf("I_StartMusic: %d (%s) ntracks %d tracks %s -> %d channels\n",
+                 mus_id,
+                 mus_id < (int)audio_lumps_.size() ? audio_lumps_[mus_id].to_string().c_str() : "?",
+                 (int)song->ntracks, song->tracks ? "yes" : "NULL", started);
+    }
+}
 
 //
 // I_StopSound
