@@ -1065,3 +1065,80 @@ fluid_sfloader_t* rom_soundfont()
         load
     };
 }
+
+//
+// rom_sfont_dump
+//
+// Writes out everything the cartridge's soundfont hands to FluidSynth: every
+// sample's placement and loop, every preset's instruments and generators.
+//
+// This exists to be a witness across a FluidSynth version change. The rendered
+// audio cannot be compared bit for bit -- the synthesiser's interpolation,
+// filters and reverb all changed between 1.x and 2.x, so identical output would
+// be the surprise, not the goal. What must survive is the *data*: the same
+// samples, in the same places, with the same loops, reachable through the same
+// presets. That is what this prints, and it is comparable byte for byte.
+//
+// Written after the lesson of the demo work: a correction without a reference
+// to check it against is a bet, and four bets in a row cannot be told apart.
+//
+void rom_sfont_dump(const char* path)
+{
+    std::ofstream out(path);
+
+    if (!out) {
+        log::warn("rom_sfont_dump: could not write {}", path);
+        return;
+    }
+
+    out << "rom soundfont witness\n";
+    out << "samples " << samples_.size() << "\n";
+    out << "presets " << presets_.size() << "\n";
+    out << "pcm " << sample_data_.size() << "\n\n";
+
+    for (size_t i {}; i < samples_.size(); ++i) {
+        const auto& s = samples_[i];
+
+        //
+        // A checksum over the sample's own PCM, so that a change in the VADPCM
+        // decoder shows up here rather than silently later. Cheap and order
+        // dependent, which is all that is wanted.
+        //
+        uint32 sum = 2166136261u;
+
+        for (auto p = s.start; p < s.end && p < sample_data_.size(); ++p) {
+            sum = (sum ^ static_cast<uint16>(sample_data_[p])) * 16777619u;
+        }
+
+        out << fmt::format("sample {:4} {:<12} rate {:6} start {:8} end {:8} "
+                           "loop {:8}..{:8} pitch {:3} adj {:5} pcm {:08x}\n",
+                           i, s.name, s.samplerate, s.start, s.end,
+                           s.loopstart, s.loopend, s.origpitch, s.pitchadj, sum);
+    }
+
+    out << "\n";
+
+    for (size_t i {}; i < presets_.size(); ++i) {
+        const auto& p = presets_[i];
+
+        out << fmt::format("preset {:4} bank {:3} prog {:3} instruments {:3} \"{}\"\n",
+                           i, p.bank, p.prog, p.instruments.size(), p.name);
+
+        for (size_t j {}; j < p.instruments.size(); ++j) {
+            const auto& inst = p.instruments[j];
+
+            out << fmt::format("   inst {:3} sample {:4} notes {:3}..{:3} gens {:3}",
+                               j, inst.sample_id, inst.note_min, inst.note_max,
+                               inst.generators.size());
+
+            for (const auto& g : inst.generators) {
+                out << fmt::format(" {}={}", static_cast<int>(g.type), g.ival);
+            }
+
+            out << "\n";
+        }
+    }
+
+    log::info("rom_sfont_dump: wrote {} ({} samples, {} presets)",
+              path, samples_.size(), presets_.size());
+}

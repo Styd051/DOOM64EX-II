@@ -41,6 +41,7 @@
 #include "z_zone.h"
 #include "i_swap.h"
 #include "con_console.h"    // for cvars
+#include "m_misc.h"         // M_CheckParm, myargc, myargv
 #include <platform/app.hh>
 #include <wad.hh>
 
@@ -1212,6 +1213,7 @@ bool operator!=(const SDL_AudioSpec& lhs, const SDL_AudioSpec& rhs)
 //
 
 fluid_sfloader_t* rom_soundfont();
+void rom_sfont_dump(const char* path);
 void I_InitSequencer(void) {
     dboolean sffound;
     Optional<String> sfpath;
@@ -1297,6 +1299,17 @@ void I_InitSequencer(void) {
             CON_DPrintf("Loading %s\n", s_soundfont->c_str());
 
             sffound = true;
+
+            //
+            // -romsfdump <file>: write out what the cartridge's soundfont just
+            // handed the synthesiser. Its only purpose is to be compared with
+            // itself across a FluidSynth version change.
+            //
+            int p = M_CheckParm("-romsfdump");
+
+            if (p) {
+                rom_sfont_dump(p < myargc - 1 ? myargv[p + 1] : "romsfont.txt");
+            }
         }
     }
 
