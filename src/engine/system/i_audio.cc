@@ -1049,17 +1049,42 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
     seq->songs = (song_t*)Z_Calloc(seq->nsongs * sizeof(song_t), PU_STATIC, 0);
 
     size_t fail {};
+    size_t missing {};
     size_t i {};
     for(auto name : audio_lumps_) {
+        //
+        // The slot is the name's position in this list, not a running count of
+        // the ones that were found. info.cc hard-codes these indices, so a name
+        // that is missing has to leave its slot empty rather than let every
+        // later sound slide down into it.
+        //
+        // It never showed with the cartridge, where all 117 names exist. The
+        // remaster's WAD names its sound effects SFX_033..SFX_0124, so all 93
+        // of them miss, and the 24 music tracks -- whose names do match -- were
+        // landing in slots 0..23. The game then asked for music at 93 and got
+        // silence, and for a sound effect at 0 and got music.
+        //
+        size_t slot = i++;
+
         auto opt = wad::open(wad::Section::sounds, name);
 
         if (!opt) {
-            fail++;
+            //
+            // Fall back to the position. The two IWADs hold the same 117 sounds
+            // in the same order -- 93 effects then 24 music tracks -- and only
+            // the effects are named differently, so the index is as good an
+            // answer as the name and it is the only one the WAD can give.
+            //
+            opt = wad::open(wad::Section::sounds, slot);
+        }
+
+        if (!opt) {
+            missing++;
             continue;
         }
 
         auto& lump = *opt;
-        song_t* song = &seq->songs[i++];
+        song_t* song = &seq->songs[slot];
         song->data = reinterpret_cast<byte *>(lump.read_bytes_ccompat(song->length));
 
         if(!song->length) {
@@ -1095,8 +1120,7 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
             // not have.
             //
             // Its music is standard MIDI and does load -- the count below is
-            // the sound effects alone -- so it will play as soon as the
-            // synthesiser has instruments to play it with.
+            // the sound effects alone.
             //
             I_Printf("%d sound effects in doom64.wad are WAV, which this engine "
                      "cannot play yet. Its music is MIDI and did load.\n", fail);
@@ -1104,6 +1128,11 @@ static bool Seq_RegisterSongs(doomseq_t* seq) {
         else {
             I_Printf("Failed to load %d MIDI tracks.\n", fail);
         }
+    }
+
+    if (missing) {
+        I_Printf("%d of the %d sounds are absent from this IWAD.\n",
+                 (int)missing, (int)audio_lumps_.size());
     }
 
     return true;
