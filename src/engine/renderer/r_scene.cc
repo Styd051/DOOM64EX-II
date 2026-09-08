@@ -39,6 +39,7 @@ extern cvar::BoolVar r_fog;
 extern cvar::BoolVar r_rendersprites;
 extern cvar::BoolVar st_flashoverlay;
 extern cvar::BoolVar r_colorizesubsectors;
+extern cvar::BoolVar r_depthbuffer;
 
 //
 // ProcessWalls
@@ -365,9 +366,19 @@ void R_SetViewMatrix(void) {
 //
 
 void R_RenderWorld(void) {
+    dboolean painter = !*r_depthbuffer;
+
     SetupFog();
 
-    dglEnable(GL_DEPTH_TEST);
+    //
+    // The painter path leaves the depth buffer alone from beginning to end.
+    // Submission order is the whole answer there: the walk hands out the
+    // farthest subsector first, so anything drawn later is in front by
+    // construction and has every right to cover what came before.
+    //
+    if(!painter) {
+        dglEnable(GL_DEPTH_TEST);
+    }
 
     DL_BeginDrawList(*r_fillmode, *r_texturecombiner);
 
@@ -402,27 +413,48 @@ void R_RenderWorld(void) {
 
     // begin draw list loop
 
-    // -------------- Draw walls (segs) --------------------------
+    if(painter) {
+        //
+        // Sprites have to become drawlist entries before anything is drawn,
+        // because on this path they are interleaved with the geometry rather
+        // than following it. R_SetupSprites also settles which subsector each
+        // one belongs to, which needs the whole walk to have finished.
+        //
+        if(devparm) {
+            spriteRenderTic = I_GetTimeMS();
+        }
 
-    DL_ProcessDrawList(DLT_WALL, ProcessWalls);
+        if(r_rendersprites) {
+            R_SetupSprites();
+        }
 
-    // -------------- Draw floors/ceilings (leafs) ---------------
-
-    GL_SetState(GLSTATE_BLEND, 1);
-    DL_ProcessDrawList(DLT_FLAT, ProcessFlats);
-
-    // -------------- Draw things (sprites) ----------------------
-
-    if(devparm) {
-        spriteRenderTic = I_GetTimeMS();
+        // Blending is switched per class inside, since walls and flats now
+        // alternate once per subsector instead of being two whole passes.
+        DL_ProcessWorldPainter(ProcessWalls, ProcessFlats, ProcessSprites);
     }
+    else {
+        // -------------- Draw walls (segs) --------------------------
 
-    if(r_rendersprites) {
-        R_SetupSprites();
+        DL_ProcessDrawList(DLT_WALL, ProcessWalls);
+
+        // -------------- Draw floors/ceilings (leafs) ---------------
+
+        GL_SetState(GLSTATE_BLEND, 1);
+        DL_ProcessDrawList(DLT_FLAT, ProcessFlats);
+
+        // -------------- Draw things (sprites) ----------------------
+
+        if(devparm) {
+            spriteRenderTic = I_GetTimeMS();
+        }
+
+        if(r_rendersprites) {
+            R_SetupSprites();
+        }
+
+        dglDepthMask(GL_FALSE);
+        DL_ProcessDrawList(DLT_SPRITE, ProcessSprites);
     }
-
-    dglDepthMask(GL_FALSE);
-    DL_ProcessDrawList(DLT_SPRITE, ProcessSprites);
 
     // -------------- Restore states -----------------------------
 

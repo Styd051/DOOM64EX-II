@@ -109,6 +109,25 @@ cvar::BoolVar r_forceanglereset = false;
 cvar::BoolVar r_colorizesubsectors = false;
 cvar::IntVar r_maxsubsectordraw = 0;
 
+//
+// How the world is composited.
+//
+// 0 -- BSP order, the way the original did it. Subsectors are drawn from the
+//      back of the walk forward, each one's sprites laid down between its own
+//      geometry and the geometry of the subsector in front of it. Nothing is
+//      sorted and nothing is depth tested.
+// 1 -- the depth buffer, which is what Doom64EX has always done.
+//
+// The original has no z-buffer at all -- there is no G_ZBUFFER, no allocation
+// and no ZMODE_OPA outside one unused macro anywhere in DOOM64-RE. Kaiser
+// dropped it from the remaster for the same reason it is off here by default:
+// a depth test *slices* a sprite against the floor it stands on and the wall
+// it leans against, because a sprite is a flat card and the floor genuinely
+// does pass through it. Painting in BSP order cannot produce that, and gives
+// back the original's own compositing besides.
+//
+cvar::BoolVar r_depthbuffer = false;
+
 extern cvar::BoolVar i_interpolateframes;
 extern cvar::BoolVar p_usecontext;
 
@@ -304,7 +323,8 @@ void R_Init(void) {
         (r_texnonpowresize, "r_TexNonPowResize", "Resize non-power-of-2 textures")
         (r_anisotropic,     "r_Anisotropic",     "Anisotropic filtering")
         (r_texturecombiner, "r_TextureCombiner", "TODO")
-        (r_forceanglereset, "r_ForceInterpolatedAngleReset", "Completely reset view angle interpolation every frame");
+        (r_forceanglereset, "r_ForceInterpolatedAngleReset", "Completely reset view angle interpolation every frame")
+        (r_depthbuffer,     "r_DepthBuffer",     "Use a depth buffer for the world. If disabled, the scene is composited in BSP order like the original, and sprites are no longer cut off by floors and walls");
 
     // Not saved, for the reason r_GBufferShow is not: an engine that comes back
     // up after a restart drawing four subsectors in fluorescent green looks
@@ -615,6 +635,21 @@ void R_SetupFrame(player_t *player) {
 
     // r_MaxSubsectorDraw counts per frame, not per level
     rendersubsectorcount = 0;
+
+    //
+    // Clear last frame's walk order. The original marks a subsector done as it
+    // draws it and leans on the sentinel to tell this frame's indexes from a
+    // stale one; clearing outright says the same thing without asking anyone to
+    // remember which of two out-of-range values means what. It is one store per
+    // subsector on a path that already does far more per frame.
+    //
+    {
+        int i;
+
+        for(i = 0; i < numsubsectors; i++) {
+            subsectors[i].drawindex = 0;
+        }
+    }
 
     renderplayer = player;
 

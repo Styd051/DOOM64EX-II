@@ -277,6 +277,77 @@ void R_ClearSprites(void) {
 }
 
 //
+// R_SpriteDrawIndex
+//
+// Which subsector a sprite should be drawn with, once nothing sorts by depth
+// any more.
+//
+// Normally its own. But a sprite is a flat card standing at a point, and a wide
+// one reaches into the neighbouring cells; if one of those is drawn after it,
+// that cell's floor and walls are laid down on top and slice the sprite in
+// half. So the sprite is promoted to the nearest subsector its own width
+// reaches -- drawn last among them, and therefore whole.
+//
+// This is the original's mechanism, not an invention: DOOM64-RE, R_AddSprite
+// (r_phase1.c:465), down to the two probe points and the MAXZ cutoff. It is
+// deliberately limited to corpses and shootable things, which is what KEX later
+// exposed as r_clipallspritetypes -- turning that off gives back exactly this.
+//
+// A drawindex of zero means the walk never reached that subsector this frame,
+// so it is no candidate; every live index is smaller than DRAWINDEX_DONE.
+//
+
+#define SPRITE_PROMOTE_MAXZ     256     // [d64] MAXZ, DOOM64-RE r_local.h:23
+
+static int R_SpriteDrawIndex(visspritelist_t* vis, int spritenum) {
+    mobj_t*         thing = vis->spr;
+    subsector_t*    sub = thing->subsector;
+    subsector_t*    probe;
+    int             best;
+    fixed_t         dx;
+    fixed_t         dy;
+    fixed_t         half;
+
+    if(!sub) {
+        return 0;
+    }
+
+    best = sub->drawindex;
+
+    if(!(thing->flags & (MF_CORPSE|MF_SHOOTABLE))) {
+        return best;
+    }
+
+    // vis->dist is the view-space depth halved (see R_SetupSprites), so the
+    // original's threshold halves with it. Far enough away, a sprite is narrow
+    // enough on screen that the seam does not show and the two extra BSP
+    // descents are not worth paying for.
+    if(vis->dist >= (SPRITE_PROMOTE_MAXZ / 2)) {
+        return best;
+    }
+
+    half = spritewidth[spritenum] >> 1;
+
+    // half a sprite's width to either side, perpendicular to the view
+    dx = half * dsin(viewangle);
+    dy = half * dcos(viewangle);
+
+    probe = R_PointInSubsector(thing->x - dx, thing->y + dy);
+
+    if(probe && probe->drawindex && probe->drawindex < best) {
+        best = probe->drawindex;
+    }
+
+    probe = R_PointInSubsector(thing->x + dx, thing->y - dy);
+
+    if(probe && probe->drawindex && probe->drawindex < best) {
+        best = probe->drawindex;
+    }
+
+    return best;
+}
+
+//
 // R_AddVisSprite
 //
 
@@ -319,6 +390,8 @@ static void R_AddVisSprite(visspritelist_t* vissprite) {
 
         spritenum = sprframe->lump[rot];
     }
+
+    vissprite->drawindex = R_SpriteDrawIndex(vissprite, spritenum);
 
     AddSpriteDrawlist(&drawlist[DLT_SPRITE], vissprite, spritenum);
 }
@@ -368,6 +441,8 @@ static dboolean R_GenerateSpritePlane(void *data, vtx_t* vertex) {
     }
 
     spritenum = sprframe->lump[rot];
+
+    //
 
     // flip sprite if needed
     if(sprframe->flip[rot]) {
@@ -546,6 +621,11 @@ static void AddSpriteDrawlist(drawlist_t *dl, visspritelist_t *vis, int texid) {
 
     list = DL_AddVertexList(dl);
     list->data = (visspritelist_t*)vis;
+
+    // DL_AddVertexList stamps the subsector the BSP walk was in, and the walk
+    // is long over by now -- sprites are turned into entries afterwards. The
+    // one R_SpriteDrawIndex settled on is the one that counts.
+    list->drawindex = vis->drawindex;
 
     if(vis->spr->flags & MF_RENDERLASER) {
         list->callback = R_GenerateLaserPlane;

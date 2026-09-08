@@ -36,6 +36,11 @@ typedef struct {
     float   x;
     float   y;
     float   z;
+    // Which subsector this sprite is drawn with on the painter path. Usually
+    // its own, but a wide sprite standing across a boundary is promoted to the
+    // nearest subsector it reaches, so the geometry in front of it cannot be
+    // laid down afterwards and cut it in half.
+    int     drawindex;
 } visspritelist_t;
 
 void R_InitSprites(const char** namelist);

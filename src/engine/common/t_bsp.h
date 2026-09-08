@@ -225,7 +225,24 @@ typedef struct subsector_s {
     word        firstline;
     word        numleafs;
     word        leaf;
+    //
+    // Where this subsector fell in the current frame's front-to-back BSP walk,
+    // 1 being the nearest. Zero means the walk has not reached it this frame;
+    // DRAWINDEX_DONE means it has been drawn already. Both compare as "not a
+    // candidate" against a live index, which is what lets R_SetupSprites ask
+    // "is that subsector nearer than this one" without a separate visited flag.
+    //
+    // The name and the sentinel are DOOM64-RE's (r_phase1.c), because this is
+    // the original's mechanism and not one of ours.
+    //
+    int         drawindex;
 } subsector_t;
+
+//
+// Marks a subsector as no longer part of this frame's list. Any value above
+// MAXSUBSECTORS would do; this is the original's.
+//
+#define DRAWINDEX_DONE      0x7fff
 
 //
 // Sprites are patches with a special naming convention

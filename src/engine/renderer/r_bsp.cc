@@ -754,6 +754,14 @@ void R_Subsector(int num) {
     rendersubsector = num;
 
     sub = &subsectors[num];
+
+    //
+    // Where this subsector fell in the walk, 1 being the nearest. The painter
+    // path draws by descending value; R_SetupSprites compares two of them to
+    // decide which subsector a wide sprite should be drawn with.
+    //
+    sub->drawindex = rendersubsectorcount;
+
     frontsector = sub->sector;
 
     R_AddLeaf(sub);
@@ -892,24 +900,18 @@ static void R_AddLeaf(subsector_t *sub) {
         i++;
     }
 
-    // FLOOR
+    //
+    // The order the two planes are appended in is the order the painter path
+    // draws them in, and the original lays the ceiling down before the floor
+    // (DOOM64-RE, R_RenderWorld: walls, ceiling, floor). The frustum test for
+    // the floor has to be taken here, while subsector_buffer still holds floor
+    // coordinates -- the ceiling block below overwrites it.
+    //
+    dboolean floorvisible = false;
 
     if(sub->sector->floorpic != skyflatnum) {
-        if(R_FrustrumTestVertex(subsector_buffer, sub->numleafs) &&
-                viewz > sub->sector->floorheight) {
-            drawlist_t *dl = &drawlist[DLT_FLAT];
-
-            if(sub->sector->flags & MS_LIQUIDFLOOR) {
-                AddLeafToDrawlist(dl, sub, sub->sector->floorpic);
-                dl->list[dl->index - 1].flags |= DLF_WATER1;
-
-                AddLeafToDrawlist(dl, sub, sub->sector->floorpic + 1);
-                dl->list[dl->index - 1].flags |= DLF_WATER2;
-            }
-            else {
-                AddLeafToDrawlist(dl, sub, sub->sector->floorpic);
-            }
-        }
+        floorvisible = (R_FrustrumTestVertex(subsector_buffer, sub->numleafs) &&
+                        viewz > sub->sector->floorheight);
     }
     else {
         bRenderSky = true;
@@ -936,6 +938,33 @@ static void R_AddLeaf(subsector_t *sub) {
     }
     else {
         bRenderSky = true;
+    }
+
+    // FLOOR
+
+    if(floorvisible) {
+        drawlist_t *dl = &drawlist[DLT_FLAT];
+
+        if(sub->sector->flags & MS_LIQUIDFLOOR) {
+            //
+            // Two layers, and which goes first matters now that nothing sorts
+            // them: the original draws floorpic+1 opaque and then floorpic over
+            // it at alpha 160 (DOOM64-RE, R_RenderWorld). DLF_WATER2 is the
+            // opaque one, DLF_WATER1 the translucent one -- see ProcessFlats.
+            //
+            // The old order was the other way round and worked only because
+            // SortDrawList ran texid descending, which put floorpic+1 first by
+            // arithmetic accident.
+            //
+            AddLeafToDrawlist(dl, sub, sub->sector->floorpic + 1);
+            dl->list[dl->index - 1].flags |= DLF_WATER2;
+
+            AddLeafToDrawlist(dl, sub, sub->sector->floorpic);
+            dl->list[dl->index - 1].flags |= DLF_WATER1;
+        }
+        else {
+            AddLeafToDrawlist(dl, sub, sub->sector->floorpic);
+        }
     }
 }
 
