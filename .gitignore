@@ -22,3 +22,6 @@ conaninfo.txt
 # meson subprojects
 /subprojects/*
 !/subprojects/*.wrap
+# Le document de passation reste local : notes de travail internes,
+# pas destinées au dépôt public.
+PASSATION-DOOM64EX-II.md
