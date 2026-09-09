@@ -505,9 +505,45 @@ static fixed_t  crossoldy;
 
 static dboolean PTR_CrossTraverse(intercept_t* in) {
     line_t* ld = in->d.line;
+    divline_t move;
 
     if(!(ld->special & MLU_CROSS)) {
         return true;
+    }
+
+    //
+    // The traverser hands us lines the move did not touch.
+    //
+    // PIT_AddLineIntercepts has two ways of deciding whether a line is crossed,
+    // and picks between them on the length of the trace. Over sixteen units it
+    // asks whether the line's two ends straddle the move. At or under -- which
+    // is every walking step, eleven units or so -- it asks the reverse: whether
+    // the move's two ends straddle the *line*, and a linedef is an infinite
+    // line to that question. Any special line in a blockmap cell the path
+    // touches is offered up if its extension happens to pass between where the
+    // player was and where it now is, however far away the linedef itself lies.
+    //
+    // Vanilla never noticed because nothing short ever went through here, and
+    // the crossing test it does use only ever sees lines from spechit -- lines
+    // already known to sit inside the destination's own bounding box, where an
+    // infinite line and a segment amount to the same thing.
+    //
+    // On MAP02 that put a teleport line's extension across a doorway several
+    // rooms from the teleporter, and walking through the doorway took it.
+    //
+    // So the other half of the test is done here: both that the move crosses
+    // the line, and that the line's ends straddle the move. Together they are
+    // the ordinary segment-against-segment test, and a line that fails either
+    // was never touched.
+    //
+    move.x  = crossoldx;
+    move.y  = crossoldy;
+    move.dx = crossthing->x - crossoldx;
+    move.dy = crossthing->y - crossoldy;
+
+    if(P_PointOnDivlineSide(ld->v1->x, ld->v1->y, &move) ==
+            P_PointOnDivlineSide(ld->v2->x, ld->v2->y, &move)) {
+        return true;    // the move passes entirely to one side of the linedef
     }
 
     // brushed past it without going through
