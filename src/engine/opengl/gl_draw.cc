@@ -150,7 +150,34 @@ int Draw_Text(int x, int y, rcolor color, float scale,
         fill = true;
     }
 
-    GL_BindGfxTexture("SFONT", true);
+    int gfxid = GL_BindGfxTexture("SFONT", true);
+
+    //
+    // How tall one row of glyphs is, as a fraction of the font.
+    //
+    // This used to be a flat half, which is right only because the cartridge's
+    // SFONT is two rows and nothing else. The remaster's is the same
+    // thirty-two-column grid of eight-pixel glyphs, but 256x64 rather than
+    // 256x16: punctuation, letters, a blank row the diacritics reach up into,
+    // and the accented characters the localised builds need. Half of that is
+    // four rows, so every letter was drawn as its own row and the three under
+    // it squeezed into eight pixels -- two grey smears where the pickup
+    // message should be.
+    //
+    // The glyphs are square and there are thirty-two to a row, so the row
+    // height follows from the picture itself. For a 256x16 font that works out
+    // at exactly the half this replaces, which is why the cartridge is
+    // untouched.
+    //
+    float rowheight = 0.5f;
+
+    if(gfxwidth[gfxid] > 0 && gfxheight[gfxid] > 0) {
+        rowheight = ((float)gfxwidth[gfxid] / (float)ST_FONTNUMSET)
+                    / (float)gfxheight[gfxid];
+    }
+
+    // Half a pixel off the top edge, so a row never bleeds into the one above.
+    const float vinset = rowheight * 0.0625f;
 
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, DGL_CLAMP);
     dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, DGL_CLAMP);
@@ -188,24 +215,24 @@ int Draw_Text(int x, int y, rcolor color, float scale,
             col = start & (ST_FONTNUMSET - 1);
 
             fcol = (col * size);
-            frow = (start >= ST_FONTNUMSET) ? 0.5f : 0.0f;
+            frow = (start >= ST_FONTNUMSET) ? rowheight : 0.0f;
 
             vtxstring[vi + 0].x     = (float)x;
             vtxstring[vi + 0].y     = (float)y;
             vtxstring[vi + 0].tu    = fcol + 0.0015f;
-            vtxstring[vi + 0].tv    = frow + size;
+            vtxstring[vi + 0].tv    = frow + vinset;
             vtxstring[vi + 1].x     = (float)x + ST_FONTWHSIZE;
             vtxstring[vi + 1].y     = (float)y;
             vtxstring[vi + 1].tu    = (fcol + size) - 0.0015f;
-            vtxstring[vi + 1].tv    = frow + size;
+            vtxstring[vi + 1].tv    = frow + vinset;
             vtxstring[vi + 2].x     = (float)x + ST_FONTWHSIZE;
             vtxstring[vi + 2].y     = (float)y + ST_FONTWHSIZE;
             vtxstring[vi + 2].tu    = (fcol + size) - 0.0015f;
-            vtxstring[vi + 2].tv    = frow + 0.5f;
+            vtxstring[vi + 2].tv    = frow + rowheight;
             vtxstring[vi + 3].x     = (float)x;
             vtxstring[vi + 3].y     = (float)y + ST_FONTWHSIZE;
             vtxstring[vi + 3].tu    = fcol + 0.0015f;
-            vtxstring[vi + 3].tv    = frow + 0.5f;
+            vtxstring[vi + 3].tv    = frow + rowheight;
 
             dglSetVertexColor(vtxstring + vi, color, 4);
 
